@@ -1,0 +1,3 @@
+#!/bin/bash
+
+ghcid -c 'cabal repl' --restart explore-core-and-more.cabal -T ':main' -W

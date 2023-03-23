@@ -4,12 +4,21 @@ name: explore-core-and-more
 version: 0
 
 executable explore-core-and-more
-  build-depends: 
+  build-depends:
     base ^>= 4.16 || ^>= 4.17 || ^>= 4.18,
     bytestring ^>= 0.11,
     megaparsec ^>= 9.3,
     parser-combinators ^>= 1.3,
     pretty-simple ^>= 4.1,
     text ^>= 2.0,
+  default-extensions:
+    BlockArguments
+    DerivingStrategies
+    DuplicateRecordFields
+    LambdaCase
+    NamedFieldPuns
+    OverloadedStrings
   ghc-options: -O -threaded -Wall
+  hs-source-dirs: .
   main-is: Main.hs
+  other-modules: Expr, Type

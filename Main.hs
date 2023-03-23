@@ -1,10 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
-
 module Main where
 
 import Control.Applicative (asum)
@@ -12,11 +5,14 @@ import qualified Data.ByteString as ByteString
 import Data.Char
 import Data.Functor (void, (<&>))
 import Data.List (foldl')
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.IO as Text
 import Data.Void (Void)
+import Expr
+import Type
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer (decimal)
@@ -77,17 +73,15 @@ coreSizeP = do
   char_ '}'
   pure CoreSize {terms, types, coercions, joins = (joins1, joins2)}
 
-type Declaration = Function
+type Declaration = Term
 
 declarationP :: P Declaration
-declarationP = functionP
+declarationP = termP
 
-data Function = Function
+data Term = Term
   { size :: CoreSize,
-    identifier :: Identifier,
+    identifier :: Qualified Identifier,
     props :: [Text],
-    ty :: Type,
-    ppty :: Text,
     scope :: Scope,
     details :: Maybe Details,
     arity :: Maybe Int,
@@ -95,15 +89,16 @@ data Function = Function
     refersToAtLeastOneCAF :: Bool,
     strictness :: Maybe Text,
     cpr :: Maybe Text,
-    unfolding :: Maybe Text
+    unfolding :: Maybe Text,
+    expr :: Expr
   }
   deriving stock (Show)
 
-functionP :: P Function
-functionP = do
+termP :: P Term
+termP = do
   string_ "-- RHS size:"
   size <- coreSizeP
-  identifier <- identifierP
+  identifier <- qualifiedP identifierP
   props <- do
     optional (char '[') >>= \case
       Nothing -> pure []
@@ -123,7 +118,7 @@ functionP = do
         char_ ']'
         pure props
   string_ "::"
-  ty <- typeP
+  _ <- takeWhile1P Nothing (/= '[')
   string_ "["
   scope <- scopeP
   details <-
@@ -170,13 +165,14 @@ functionP = do
         _ <- optional (string_ ",")
         pure (Just (x <> y <> z))
   string_ "]"
+  _ <- identifierP
+  string_ "="
+  expr <- exprP
   pure
-    Function
+    Term
       { size,
         identifier,
         props,
-        ty,
-        ppty = prettyType ty,
         scope,
         details,
         arity,
@@ -184,8 +180,15 @@ functionP = do
         refersToAtLeastOneCAF,
         strictness,
         cpr,
-        unfolding
+        unfolding,
+        expr
       }
+
+qualifiedP :: P a -> P (Qualified a)
+qualifiedP p = do
+  modules <- many (try (takeWhile1P Nothing isAlphaNum <* char '.'))
+  x <- p
+  pure (Qualified modules x)
 
 type Identifier = [Text]
 
@@ -193,51 +196,36 @@ identifierP :: P Identifier
 identifierP = do
   takeWhile1P Nothing (\c -> isAlphaNum c || c == '$') `sepBy1` char '.' <* space
 
-data Type
-  = App [Text]
-  | Arrow Type Type
-  | Forall [Text] Type
-  | Lit Text
-  deriving stock (Show)
+-- data Type
+--   = App [Text]
+--   | Arrow Type Type
+--   | Forall [Text] Type
+--   | Lit Text
+--   deriving stock (Show)
 
-prettyType :: Type -> Text
-prettyType = prettyType1 False
-
-prettyType1 :: Bool -> Type -> Text
-prettyType1 onLhsOfArrow = \case
-  App ss -> Text.unwords ss
-  Arrow lhs rhs ->
-    let s = prettyType1 True lhs <> " -> " <> prettyType rhs
-     in if onLhsOfArrow then "(" <> s <> ")" else s
-  Forall vars ty ->
-    if onLhsOfArrow
-      then "(" <> Text.unwords ("forall" : vars) <> ". " <> prettyType ty <> ")"
-      else prettyType ty
-  Lit s -> s
-
-typeP :: P Type
-typeP =
-  asum
-    [ do
-        string_ "forall"
-        vars <- some (takeWhile1P Nothing isLower <* space)
-        string_ "."
-        ty <- typeP
-        pure (Forall vars ty),
-      do
-        lhs <-
-          asum
-            [ string_ "(" *> typeP <* string_ ")",
-              some (takeWhile1P Nothing isAlphaNum <* space) <&> \case
-                lits@(_ : _ : _) -> App lits
-                lits -> Lit (head lits)
-            ]
-        optional (string_ "%1 ->") >>= \case
-          Nothing -> pure lhs
-          Just () -> do
-            rhs <- typeP
-            pure (Arrow lhs rhs)
-    ]
+-- typeP :: P Type
+-- typeP =
+--   asum
+--     [ do
+--         string_ "forall"
+--         vars <- some (takeWhile1P Nothing isLower <* space)
+--         string_ "."
+--         ty <- typeP
+--         pure (Forall vars ty),
+--       do
+--         lhs <-
+--           asum
+--             [ string_ "(" *> typeP <* string_ ")",
+--               some (takeWhile1P Nothing isAlphaNum <* space) <&> \case
+--                 lits@(_ : _ : _) -> App lits
+--                 lits -> Lit (head lits)
+--             ]
+--         optional (string_ "%1 ->") >>= \case
+--           Nothing -> pure lhs
+--           Just () -> do
+--             rhs <- typeP
+--             pure (Arrow lhs rhs)
+--     ]
 
 data Scope
   = Exported
@@ -259,6 +247,63 @@ detailsP :: P Details
 detailsP =
   asum
     [ DataConstructorWrapper <$ string_ "DataConWrapper"
+    ]
+
+exprP :: P Expr
+exprP =
+  asum
+    [ do
+        string_ "\\"
+        bindings <- some bindingP
+        string_ "->"
+        body <- exprP
+        pure (ELam bindings body),
+      string_ "(" *> exprP <* string_ ")",
+      do
+        string_ "case"
+        scrutinee <- exprP
+        string_ "of"
+        whnfScrutinee <- optional (varP <* takeWhileP Nothing (/= '{'))
+        string_ "{"
+        alternatives <- many alternativeP
+        pure (ECase scrutinee whnfScrutinee alternatives),
+      EId <$> idP
+    ]
+
+idP :: P (Qualified Text)
+idP =
+  qualifiedP varP
+
+varP :: P Text
+varP = do
+  _ <- lookAhead (satisfy (\c -> isLower c || c == '_' || c == '@' || c == '$'))
+  ident <- takeWhile1P (Just "identifier") (\c -> isAlphaNum c || c == '_' || c == '@' || c == '$')
+  space
+  pure ident
+
+bindingP :: P Binding
+bindingP = do
+  string_ "("
+  var <- varP
+  props <-
+    optional (string "[") >>= \case
+      Nothing -> pure Nothing
+      Just lb -> do
+        props <- takeWhile1P Nothing (/= ']')
+        rb <- string "]"
+        space
+        pure (Just (lb <> props <> rb))
+  _ <- takeWhileP Nothing (/= ')')
+  string_ ")"
+  pure (Binding var props Nothing)
+
+alternativeP :: P Alternative
+alternativeP = 
+  asum
+    [ do
+        string_ "__DEFAULT"
+        string_ "->"
+        ADef <$> exprP
     ]
 
 decimalWithCommas :: P Int
