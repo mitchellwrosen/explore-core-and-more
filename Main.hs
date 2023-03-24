@@ -1,22 +1,28 @@
 module Main where
 
 import Control.Applicative (asum)
+import Control.Monad (when)
 import qualified Data.ByteString as ByteString
 import Data.Char
+import Data.Foldable (for_)
 import Data.Functor (void, (<&>))
 import Data.List (foldl')
 import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.IO as Text
 import Data.Void (Void)
 import Expr
-import Type
+import Pretty (prettyExpr)
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer (decimal)
+import Text.Megaparsec.Debug
 import Text.Pretty.Simple
+import Type
 
 main :: IO ()
 main = do
@@ -25,6 +31,8 @@ main = do
     Left err -> putStrLn (errorBundlePretty err)
     Right (result, rest) -> do
       pPrintForceColor result
+      Text.putStrLn ""
+      for_ (declarations result) \Term {expr} -> Text.putStrLn (prettyExpr expr)
       Text.putStrLn ("\n" <> Text.pack (show rest))
 
 type P = Parsec Void Text
@@ -80,7 +88,7 @@ declarationP = termP
 
 data Term = Term
   { size :: CoreSize,
-    identifier :: Qualified Identifier,
+    identifier :: ([Text], Text),
     props :: [Text],
     scope :: Scope,
     details :: Maybe Details,
@@ -98,7 +106,7 @@ termP :: P Term
 termP = do
   string_ "-- RHS size:"
   size <- coreSizeP
-  identifier <- qualifiedP identifierP
+  identifier <- idP
   props <- do
     optional (char '[') >>= \case
       Nothing -> pure []
@@ -148,19 +156,17 @@ termP = do
   unfolding <-
     optional (string_ "Unf=") >>= \case
       Nothing -> pure Nothing
-      Just () -> do
+      Just () -> dbg "Unfolding" do
         x <- string "Unf{"
-        y <-
-          fmap Text.concat do
-            many do
-              asum
-                [ takeWhile1P Nothing (\c -> c /= '{' && c /= '}'),
-                  do
-                    x0 <- string "{"
-                    y0 <- takeWhileP Nothing (\c -> c /= '}')
-                    z0 <- string "}"
-                    pure (x0 <> y0 <> z0)
-                ]
+        y <- do
+          let nonBracketHunk = takeWhile1P Nothing (\c -> c /= '{' && c /= '}')
+              bracketHunk = do
+                x0 <- string "{"
+                y0 <- hunks
+                z0 <- string "}"
+                pure (x0 <> y0 <> z0)
+              hunks = Text.concat <$> many (nonBracketHunk <|> bracketHunk)
+          hunks
         z <- string "}"
         _ <- optional (string_ ",")
         pure (Just (x <> y <> z))
@@ -184,11 +190,11 @@ termP = do
         expr
       }
 
-qualifiedP :: P a -> P (Qualified a)
+qualifiedP :: P a -> P ([Text], a)
 qualifiedP p = do
   modules <- many (try (takeWhile1P Nothing isAlphaNum <* char '.'))
   x <- p
-  pure (Qualified modules x)
+  pure (modules, x)
 
 type Identifier = [Text]
 
@@ -196,36 +202,50 @@ identifierP :: P Identifier
 identifierP = do
   takeWhile1P Nothing (\c -> isAlphaNum c || c == '$') `sepBy1` char '.' <* space
 
--- data Type
---   = App [Text]
---   | Arrow Type Type
---   | Forall [Text] Type
---   | Lit Text
---   deriving stock (Show)
+typeP :: P Type
+typeP =
+  typeP_ >>= \case
+    TApp x y zs -> undefined -- Type Type [Type]
+    TForall vars ty -> undefined -- [Text] Type
+    TFun x y -> undefined -- Type Type
+    TId ss s -> undefined
 
--- typeP :: P Type
--- typeP =
---   asum
---     [ do
---         string_ "forall"
---         vars <- some (takeWhile1P Nothing isLower <* space)
---         string_ "."
---         ty <- typeP
---         pure (Forall vars ty),
---       do
---         lhs <-
---           asum
---             [ string_ "(" *> typeP <* string_ ")",
---               some (takeWhile1P Nothing isAlphaNum <* space) <&> \case
---                 lits@(_ : _ : _) -> App lits
---                 lits -> Lit (head lits)
---             ]
---         optional (string_ "%1 ->") >>= \case
---           Nothing -> pure lhs
---           Just () -> do
---             rhs <- typeP
---             pure (Arrow lhs rhs)
---     ]
+-- asum
+--   [ do
+--       string_ "forall"
+--       vars <- some (takeWhile1P Nothing isLower <* space)
+--       string_ "."
+--       ty <- typeP
+--       pure (TForall vars ty),
+--     do
+--       lhs <-
+--         asum
+--           [ string_ "(" *> typeP <* string_ ")",
+--             some (takeWhile1P Nothing isAlphaNum <* space) <&> \case
+--               lit0 : lit1 : lits -> TApp lit0 lit1 lits
+--               lits -> TVar (head lits)
+--           ]
+--       optional (string_ "%1 ->") >>= \case
+--         Nothing -> pure lhs
+--         Just () -> do
+--           rhs <- typeP
+--           pure (TFun lhs rhs)
+--   ]
+
+typeP_ :: P Type
+typeP_ =
+  asum
+    [ do
+        string_ "forall"
+        vars <- some (takeWhile1P Nothing isLower <* space)
+        string_ "."
+        ty <- typeP
+        pure (TForall vars ty),
+      string_ "(" *> typeP <* string_ ")",
+      do
+        (modules, var) <- idP
+        pure (TId modules var)
+    ]
 
 data Scope
   = Exported
@@ -250,7 +270,20 @@ detailsP =
     ]
 
 exprP :: P Expr
-exprP =
+exprP = do
+  expr <- exprP_
+  case expr of
+    ELam {} -> pure expr
+    EId {} ->
+      many exprP_ <&> \case
+        [] -> expr
+        e : es -> (EApp expr e es)
+    ELit {} -> error "ELit"
+    EApp {} -> error "EApp"
+    ECase {} -> pure expr
+
+exprP_ :: P Expr
+exprP_ =
   asum
     [ do
         string_ "\\"
@@ -266,26 +299,34 @@ exprP =
         whnfScrutinee <- optional (varP <* takeWhileP Nothing (/= '{'))
         string_ "{"
         alternatives <- many alternativeP
+        string_ "}"
         pure (ECase scrutinee whnfScrutinee alternatives),
-      EId <$> idP
+      do
+        (modules, var) <- idP
+        pure (EId modules var)
     ]
 
-idP :: P (Qualified Text)
-idP =
-  qualifiedP varP
+idP :: P ([Text], Text)
+idP = do
+  do
+    var <- lookAhead varP
+    when (Set.member var keywords) empty
+  modules <- many (try (takeWhile1P Nothing isAlphaNum <* char '.'))
+  var <- varP
+  pure (modules, var)
 
 varP :: P Text
 varP = do
-  _ <- lookAhead (satisfy (\c -> isLower c || c == '_' || c == '@' || c == '$'))
-  ident <- takeWhile1P (Just "identifier") (\c -> isAlphaNum c || c == '_' || c == '@' || c == '$')
+  _ <- lookAhead (satisfy (\c -> isAlpha c || c == '_' || c == '@' || c == '$'))
+  ident <- takeWhile1P (Just "var") (\c -> isAlphaNum c || c == '_' || c == '@' || c == '$')
   space
   pure ident
 
-bindingP :: P Binding
+bindingP :: P Text
 bindingP = do
   string_ "("
   var <- varP
-  props <-
+  _props <-
     optional (string "[") >>= \case
       Nothing -> pure Nothing
       Just lb -> do
@@ -293,18 +334,25 @@ bindingP = do
         rb <- string "]"
         space
         pure (Just (lb <> props <> rb))
-  _ <- takeWhileP Nothing (/= ')')
+  _ty <-
+    optional (string_ "::") >>= \case
+      Nothing -> pure Nothing
+      Just () -> Just <$> typeP
   string_ ")"
-  pure (Binding var props Nothing)
+  pure var
 
 alternativeP :: P Alternative
-alternativeP = 
-  asum
-    [ do
-        string_ "__DEFAULT"
-        string_ "->"
-        ADef <$> exprP
-    ]
+alternativeP = do
+  alt <-
+    asum
+      [ do
+          string_ "__DEFAULT"
+          string_ "->"
+          expr <- exprP
+          pure (ADef expr)
+      ]
+  _ <- optional (string_ ";")
+  pure alt
 
 decimalWithCommas :: P Int
 decimalWithCommas = do
@@ -316,3 +364,11 @@ char_ c = void (char c) <* space
 
 string_ :: Text -> P ()
 string_ s = void (string s) <* space
+
+keywords :: Set Text
+keywords =
+  Set.fromList
+    [ "case",
+      "let",
+      "of"
+    ]

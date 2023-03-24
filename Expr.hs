@@ -4,10 +4,10 @@ import Data.Text (Text)
 import Type
 
 data Expr
-  = EId (Qualified Text)
+  = EId [Text] Text -- A.B.C.xyz = [A,B,C] xyz
   | ELit Text
-  | EApp Expr [Expr]
-  | ELam [Binding] Expr
+  | EApp Expr Expr [Expr] -- f a b c d ...
+  | ELam [Text] Expr
   | -- | Let   (Bind b) (Expr b)
     ECase Expr (Maybe Text) [Alternative]
   -- \| Cast  (Expr b) CoercionR
@@ -21,16 +21,3 @@ data Alternative
   | ALit Text Expr
   | ADef Expr
   deriving stock (Show)
-
-data Binding = Binding
-  { var :: Text,
-    props :: Maybe Text,
-    ty :: Maybe Text
-  }
-  deriving stock (Show)
-
--- TODO move this
-data Qualified a
-  = Qualified [Text] a
-  deriving stock (Show)
-

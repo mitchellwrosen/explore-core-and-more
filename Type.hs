@@ -3,8 +3,13 @@ module Type where
 import Data.Text (Text)
 
 data Type
-  = TVar Text
+  = TApp Type Type [Type]
+  | TForall [Text] Type
+  | TFun Type Type
+  | TId [Text] Text -- A.B.C.D = [A,B,C] D
   deriving stock (Show)
+
+
   {-
   | AppTy
         Type
@@ -67,9 +72,6 @@ data Type
 
   -- deriving Data.Data
   -}
-
-prettyType :: Type -> Text
-prettyType = undefined
 
   -- App ss -> Text.unwords ss
   -- Arrow lhs rhs ->
