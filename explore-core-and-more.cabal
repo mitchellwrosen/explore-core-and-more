@@ -16,11 +16,15 @@ executable explore-core-and-more
     text ^>= 2.0,
   default-extensions:
     BlockArguments
+    DeriveFunctor
     DerivingStrategies
     DuplicateRecordFields
     LambdaCase
     NamedFieldPuns
     OverloadedStrings
+    PatternSynonyms
+    RankNTypes
+    ViewPatterns
   ghc-options: -O -threaded -Wall
   hs-source-dirs: .
   main-is: Main.hs

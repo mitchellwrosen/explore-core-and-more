@@ -31,10 +31,10 @@ main = do
   case runParser parser "" contents of
     Left err -> putStrLn (errorBundlePretty err)
     Right (result, rest) -> do
-      pPrintForceColor result
-      Text.putStrLn ""
+      -- pPrintForceColor result
+      -- Text.putStrLn ""
       let putTerm Term {identifier, expr} = do
-            Text.putStrLn (prettyExpr identifier expr)
+            Text.putStrLn (prettyExpr identifier (mungeExpression expr))
             Text.putStrLn ""
       for_ (declarations result) \case
         DeclTerm term -> putTerm term
@@ -252,6 +252,10 @@ exprP = do
       many exprP_ <&> \case
         [] -> expr0
         e : es -> (EApp expr0 e es)
+    EJump ->
+      many exprP_ <&> \case
+        [] -> expr0
+        e : es -> (EApp expr0 e es)
     ELit {} -> pure expr0
     -- this can happen:
     --
@@ -285,42 +289,43 @@ exprP_ = do
           '(' -> ETy <$> typeAtomP
           _ -> ETy . TId <$> tidentP,
       do
-        string_ "case"
+        ekeywordP "case"
         scrutinee <- exprP
-        string_ "of"
+        ekeywordP "of"
         whnf <- optional (eidentP <* takeWhileP Nothing (/= '{'))
         string_ "{"
         alternatives <- many alternativeP
         string_ "}"
         pure (ECase scrutinee whnf alternatives),
       do
-        string_ "let"
+        ekeywordP "let"
         string_ "{"
         ident <- identifierP
         string_ "="
         expr1 <- exprP
         string_ "}"
-        string_ "in"
+        ekeywordP "in"
         expr2 <- exprP
         pure (ELet ident expr1 expr2),
       do
-        string_ "joinrec"
+        ekeywordP "joinrec"
         string_ "{"
         points <- some joinPointP
         string_ "}"
-        string_ "in"
+        ekeywordP "in"
         body <- exprP
         pure (EJoinrec points body),
       do
-        string_ "join"
+        ekeywordP "join"
         string_ "{"
         point <- joinPointP
         string_ "}"
-        string_ "in"
+        ekeywordP "in"
         body <- exprP
         pure (EJoin point body),
+      EJump <$ ekeywordP "jump",
       do
-        string_ "(#"
+        string_ "(# "
         exprs <- sepBy exprP (char_ ',')
         string_ "#)"
         pure (ETupleU exprs),
@@ -386,7 +391,7 @@ eidentStrP = do
             (\c -> isAlphaNum c || isOperator c || c == '_' || c == '\'' || c == ':')
         space
         pure (Text.cons c0 cs),
-      ":" <$ string_ ":",
+      ":" <$ string_ ":", -- fixme couldn't this be an operator or something, not cons
       "[]" <$ string_ "[]",
       "()" <$ string_ "()",
       "(##)" <$ string_ "(##)"
@@ -413,6 +418,13 @@ eidentStrP = do
         || c == '^'
         || c == '|'
         || c == '~'
+
+ekeywordP :: Text -> P ()
+ekeywordP s =
+  try do
+    _ <- string s
+    notFollowedBy (satisfy (\c -> isAlphaNum c || c == '_' || c == '\''))
+    space
 
 modulePrefixP :: P [Text]
 modulePrefixP =
@@ -551,6 +563,7 @@ keywords :: Set Text
 keywords =
   Set.fromList
     [ "case",
+      "jump",
       "let",
       "of"
     ]
