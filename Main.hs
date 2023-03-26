@@ -91,7 +91,7 @@ data Declaration
   deriving stock (Show)
 
 declarationP :: P Declaration
-declarationP =
+declarationP = do
   optional (string_ "Rec {") >>= \case
     Nothing -> DeclTerm <$> termP
     Just () -> do
@@ -110,25 +110,43 @@ data Term = Term
   }
   deriving stock (Show)
 
-termP :: P Term
-termP = do
+-- Parse an identifier with a type signature like
+--
+--   foo :: Type
+--   foo = ...
+--       ^
+--
+-- leaving the parse state at the first token after the second 'foo'. This isn't always an '=' token; join points are
+-- written with a number of parameters to the left of the '=' corresponding to the join arity, e.g.
+--
+--   foo :: Type
+--   foo (x :: Type) = ...
+--       ^
+identifierP :: P Text
+identifierP = do
+  startPos <- getSourcePos
   _ <- modulePrefixP
-  identifier <- eidentStrP
-  string_ "::"
+  ident <- eidentStrP
   _typeText <- do
-    let grabLine = takeWhile1P Nothing (/= '\n') <* char '\n'
+    let grabLine = takeWhile1P Nothing (/= '\n') <* space
     let loop :: [Text] -> P Text
-        loop acc =
-          optional (lookAhead (satisfy isUpper)) >>= \case
-            Nothing -> do
+        loop acc = do
+          currentPos <- getSourcePos
+          if sourceColumn currentPos == sourceColumn startPos
+            then pure (Text.unwords (reverse acc))
+            else do
               line <- grabLine
               loop (line : acc)
-            Just _ -> pure (Text.unwords (reverse acc))
     line <- grabLine
     loop [line]
   -- repeated identifier from type sig line
   _ <- modulePrefixP
   _ <- eidentStrP
+  pure ident
+
+termP :: P Term
+termP = do
+  identifier <- identifierP
   string_ "="
   expr <- exprP
   pure
@@ -139,14 +157,14 @@ termP = do
 
 typeP :: P Type
 typeP = do
-  ty0 <- typeP_
+  ty0 <- typeHeadP
   case ty0 of
     TApp {} -> funtimes ty0
     TForall {} -> funtimes ty0
     TFun {} -> undefined -- Type Type
     TId {} -> do
       ty1 <-
-        many typeP_ <&> \case
+        many typeHeadP <&> \case
           [] -> ty0
           t : ts -> (TApp ty0 t ts)
       funtimes ty1
@@ -159,8 +177,8 @@ typeP = do
           ty2 <- typeP
           pure (TFun ty ty2)
 
-typeP_ :: P Type
-typeP_ =
+typeHeadP :: P Type
+typeHeadP =
   asum
     [ do
         string_ "forall"
@@ -186,16 +204,21 @@ typeP_ =
         string_ "."
         ty <- typeP
         pure (TForall vars ty),
-      do
+      typeAtomP
+    ]
+
+typeAtomP :: P Type
+typeAtomP =
+  asum
+    [ do
         char_ '['
         ty <- typeP
         char_ ']'
         pure (TApp (TId "[]") ty []),
+      TId "()" <$ string_ "()",
       TId "(# #)" <$ string_ "(# #)",
       char_ '(' *> typeP <* char_ ')',
-      do
-        ident <- tidentP
-        pure (TId ident)
+      TId <$> tidentP
     ]
 
 data Scope
@@ -223,23 +246,29 @@ detailsP =
 exprP :: P Expr
 exprP = do
   expr0 <- exprP_
-  expr1 <-
-    case expr0 of
-      ELam {} -> pure expr0
-      EId {} ->
-        many exprP_ <&> \case
-          [] -> expr0
-          e : es -> (EApp expr0 e es)
-      ELit {} -> pure expr0
-      EApp {} -> error "EApp"
-      ECase {} -> pure expr0
-  -- throw away: `cast` <Co:4> :: ...
-  _ <-
-    optional do
-      string_ "`cast` <Co:"
-      _ <- takeWhile1P Nothing isDigit
-      string_ "> :: ..."
-  pure expr1
+  case expr0 of
+    ELam {} -> pure expr0
+    EId {} ->
+      many exprP_ <&> \case
+        [] -> expr0
+        e : es -> (EApp expr0 e es)
+    ELit {} -> pure expr0
+    -- this can happen:
+    --
+    --   ((f x `cast` Coercion) y)
+    --
+    -- which we want to become:
+    --
+    --   f x y
+    EApp e0 e1 es0 -> do
+      es1 <- many exprP_
+      pure (EApp e0 e1 (es0 ++ es1))
+    ECase {} -> pure expr0
+    EJoinrec {} -> pure expr0
+    ETy {} -> error "ETy"
+    ETupleU {} -> pure expr0
+    ELet {} -> pure expr0
+    EJoin {} -> pure expr0
 
 exprP_ :: P Expr
 exprP_ = do
@@ -250,11 +279,10 @@ exprP_ = do
         string_ "->"
         body <- exprP
         pure (ELam bindings body),
-      char_ '(' *> exprP <* char_ ')',
       do
         char_ '@'
         lookAhead anySingle >>= \case
-          '(' -> ETy <$> typeP
+          '(' -> ETy <$> typeAtomP
           _ -> ETy . TId <$> tidentP,
       do
         string_ "case"
@@ -265,9 +293,60 @@ exprP_ = do
         alternatives <- many alternativeP
         string_ "}"
         pure (ECase scrutinee whnf alternatives),
+      do
+        string_ "let"
+        string_ "{"
+        ident <- identifierP
+        string_ "="
+        expr1 <- exprP
+        string_ "}"
+        string_ "in"
+        expr2 <- exprP
+        pure (ELet ident expr1 expr2),
+      do
+        string_ "joinrec"
+        string_ "{"
+        points <- some joinPointP
+        string_ "}"
+        string_ "in"
+        body <- exprP
+        pure (EJoinrec points body),
+      do
+        string_ "join"
+        string_ "{"
+        point <- joinPointP
+        string_ "}"
+        string_ "in"
+        body <- exprP
+        pure (EJoin point body),
+      do
+        string_ "(#"
+        exprs <- sepBy exprP (char_ ',')
+        string_ "#)"
+        pure (ETupleU exprs),
       ELit <$> litP,
-      EId <$> eidentP
+      EId <$> eidentP,
+      do
+        char_ '('
+        expr <- exprP
+        -- throw away: `cast` <Co:4> :: ...
+        _ <-
+          optional do
+            string_ "`cast` <Co:"
+            _ <- takeWhile1P Nothing isDigit
+            string_ "> :: ..."
+        char_ ')'
+        pure expr
     ]
+
+joinPointP :: P JoinPoint
+joinPointP = do
+  ident <- identifierP
+  bindings <- some bindingP
+  string_ "="
+  body <- exprP
+  _ <- optional (string_ ";")
+  pure (JoinPoint ident bindings body)
 
 eidentP :: P Text
 eidentP = do
@@ -280,7 +359,7 @@ eidentP = do
     _ <- optional packagePrefixP
     _ <- modulePrefixP
     ident <- eidentStrP
-    guard (not (Set.member ident keywords))
+    guard (ident /= "=" && not (Set.member ident keywords))
     pure ident
 
 packagePrefixP :: P Text
@@ -294,22 +373,46 @@ packageIdentifierP = do
   pure (Text.cons c0 cs)
 
 eidentStrP :: P Text
-eidentStrP =
+eidentStrP = do
   asum
     [ do
-        c0 <- satisfy \c -> isAlpha c || isOperator c || c == '_'
+        -- make sure we don't treat '#' like an operator if it's followed by right paren
+        notFollowedBy (string "#)")
+
+        c0 <- satisfy \c -> isAlpha c || isOperator c || c == '_' || c == '\''
         cs <-
           takeWhileP
             Nothing
-            (\c -> isAlphaNum c || isOperator c || c == '_' || c == ':')
+            (\c -> isAlphaNum c || isOperator c || c == '_' || c == '\'' || c == ':')
         space
         pure (Text.cons c0 cs),
+      ":" <$ string_ ":",
       "[]" <$ string_ "[]",
+      "()" <$ string_ "()",
       "(##)" <$ string_ "(##)"
     ]
   where
     isOperator c =
-      c == '#' || c == '*' || c == '>' || c == '=' || c == '$'
+      c == '!'
+        || c == '#'
+        || c == '$'
+        || c == '%'
+        || c == '&'
+        || c == '*'
+        || c == '+'
+        || c == '-'
+        || c == '.'
+        || c == '/'
+        || c == ':'
+        || c == '<'
+        || c == '='
+        || c == '>'
+        || c == '?'
+        || c == '@'
+        || c == '\\'
+        || c == '^'
+        || c == '|'
+        || c == '~'
 
 modulePrefixP :: P [Text]
 modulePrefixP =
@@ -322,17 +425,18 @@ modulePrefixP =
 
 tidentP :: P Text
 tidentP = do
+  tick <- string "'" <|> pure ""
   -- skip package identifier
   _ <- optional packagePrefixP
   _ <- modulePrefixP
-  c0 <- satisfy \c -> isAlpha c || c == '_' || c == '*'
-  cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_')
-  let ident = Text.cons c0 cs
+  c0 <- satisfy \c -> isAlpha c || c == '_' || c == '\'' || c == '*'
+  cs <- takeWhileP Nothing \c -> isAlphaNum c || c == '_' || c == '\'' || c == '#'
+  let ident = tick <> Text.cons c0 cs
   -- tyvars sometimes have some skolem info like @a[sk:1]
   when (isLower (Text.head ident)) do
     try (char '[' *> void (takeWhileP Nothing (/= ']')) <* char ']') <|> pure ()
   space
-  pure (Text.cons c0 cs)
+  pure ident
 
 varP :: P Var
 varP = do
@@ -349,7 +453,7 @@ varP = do
           var <- tyvar
           pure (Tyvar var Nothing)
     c0 -> do
-      cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_' || c == '$')
+      cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_' || c == '\'' || c == '$')
       space
       ty <- optional tysig
       pure (Var (Text.cons c0 cs) ty)
@@ -381,7 +485,7 @@ litP :: P Lit
 litP =
   asum
     [ do
-        char '"'
+        _ <- char '"'
         let hunk :: P Text
             hunk = takeWhileP Nothing (\c -> c /= '"' && c /= '\\')
         let hunks :: [Text] -> P Text
@@ -396,19 +500,21 @@ litP =
           Nothing -> error "TODO non-# string"
           Just () -> LStrU str,
       do
+        sign <- string "-" <|> pure ""
         c0 <- satisfy isDigit
         cs <- takeWhileP Nothing isDigit
-        optional (string_ "##64") >>= \case
+        let n = sign <> Text.cons c0 cs
+        (if sign == "-" then pure Nothing else optional (string_ "##64")) >>= \case
           Nothing ->
-            optional (string_ "#") >>= \case
-              Nothing -> pure (LInt (Text.cons c0 cs))
-              Just () -> pure (LIntU (Text.cons c0 cs))
+            optional (string_ "#") <&> \case
+              Nothing -> LInt n
+              Just () -> LIntU n
           Just () -> pure (LWord64U (Text.cons c0 cs))
     ]
 
-alternativeP :: P Alternative
+alternativeP :: P (Alternative, Expr)
 alternativeP = do
-  mkAlt <-
+  alt <-
     asum
       [ do
           _ <- lookAhead (satisfy isAlpha)
@@ -416,13 +522,19 @@ alternativeP = do
           bindings <- many varP
           pure (ACon constructor bindings),
         do
+          string_ "(#"
+          bindings <- sepBy varP (char_ ',')
+          string_ "#)"
+          pure (ATupleU bindings),
+        ALit <$> litP,
+        do
           string_ "__DEFAULT"
           pure ADef
       ]
   string_ "->"
   expr <- exprP
   _ <- optional (string_ ";")
-  pure (mkAlt expr)
+  pure (alt, expr)
 
 decimalWithCommas :: P Int
 decimalWithCommas = do

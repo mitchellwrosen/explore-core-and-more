@@ -17,12 +17,12 @@ prettyExpr ident expr =
 
 data Ann
   = AnnKeyword
-  | AnnTyvar -- bound tyvar
+  | AnnType
 
 styleAnn :: Ann -> AnsiStyle
 styleAnn = \case
   AnnKeyword -> bold
-  AnnTyvar -> color Blue
+  AnnType -> color Blue
 
 exprDoc :: Expr -> Doc Ann
 exprDoc =
@@ -39,6 +39,22 @@ exprDoc_ addParensIfSpaces = \case
     (if addParensIfSpaces then parens else id) $
       nest 2 $
         "\\" <> hsep (map varDoc bindings) <> " ->" <> line <> exprDoc body
+  -- Made-up straight-line syntax for single-alternative case (to reduce nesting)
+  ECase scrutinee whnf [(alternative, body)] ->
+    (if addParensIfSpaces then parens else id) $
+      ( case (alternative, whnf) of
+          (ADef, Just s) -> pretty s
+          _ ->
+            case whnf of
+              Nothing -> alternativeDoc False alternative
+              Just s -> pretty s <> "@" <> alternativeDoc True alternative
+      )
+        <> " = "
+        <> annotate AnnKeyword "case"
+        <> space
+        <> group (exprDoc scrutinee)
+        <> line
+        <> exprDoc body
   ECase scrutinee whnf alternatives ->
     (if addParensIfSpaces then parens else id) $
       nest 2 $
@@ -48,34 +64,57 @@ exprDoc_ addParensIfSpaces = \case
             group (exprDoc scrutinee),
             space,
             annotate AnnKeyword "of",
-            maybe mempty (\s -> " " <> pretty s) whnf,
+            maybe mempty (\s -> space <> pretty s) whnf,
             alternativesDoc alternatives
           ]
-  ETy ty -> "@" <> typeDoc_ True ty
+  ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
+  ELet ident defn body ->
+    (if addParensIfSpaces then parens else id) $
+      annotate AnnKeyword "let"
+        <> space
+        <> hang 2 (pretty ident <> " =" <> line <> exprDoc defn)
+        <> line
+        <> annotate AnnKeyword "in"
+        <> space
+        <> align (exprDoc body)
+  EJoin {} -> "EJOIN"
+  EJoinrec defns body ->
+    (if addParensIfSpaces then parens else id) $
+      nest 2 (annotate AnnKeyword "joinrec" <> line <> hsep (map joinPointDoc defns))
+        <> line
+        <> nest 2 (annotate AnnKeyword "in" <> line <> exprDoc body)
+  ETupleU {} -> "ETUPLEU"
 
-alternativeDoc :: Alternative -> Doc Ann
-alternativeDoc = \case
-  ACon con vars body -> go (hsep (pretty con : map varDoc vars)) body
-  ADef body -> go "_" body
-  ALit {} -> "ALIT"
-  where
-    go lhs rhs =
-      nest 2 (lhs <> " ->" <> line <> exprDoc rhs)
+alternativeDoc :: Bool -> Alternative -> Doc Ann
+alternativeDoc addParensIfSpaces = \case
+  ACon con vars ->
+    (if addParensIfSpaces then parens else id) $
+      hsep (pretty con : map varDoc vars)
+  ADef -> "_"
+  ALit lit -> litDoc lit
+  ATupleU vars -> "(# " <> hsep (punctuate "," (map varDoc vars)) <> " #)"
 
-alternativesDoc :: [Alternative] -> Doc Ann
+alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
 alternativesDoc = \case
   [] -> mempty
-  alts -> line <> go alts
-  -- go -- . moveDefaultToBottom
+  alts -> line <> go (moveDefaultToBottom alts)
   where
-    go :: [Alternative] -> Doc Ann
+    go :: [(Alternative, Expr)] -> Doc Ann
     go =
-      vsep . map alternativeDoc
+      vsep
+        . map
+          ( \(alternative, body) ->
+              nest 2 (alternativeDoc False alternative <> " ->" <> line <> exprDoc body)
+          )
 
-    moveDefaultToBottom :: [Alternative] -> [Alternative]
+    moveDefaultToBottom :: [(Alternative, Expr)] -> [(Alternative, Expr)]
     moveDefaultToBottom = \case
-      x@ADef {} : xs -> xs ++ [x]
+      x@(ADef {}, _) : xs -> xs ++ [x]
       xs -> xs
+
+joinPointDoc :: JoinPoint -> Doc Ann
+joinPointDoc (JoinPoint name bindings body) =
+  nest 2 (pretty name <> space <> hsep (map varDoc bindings) <> " =" <> line <> exprDoc body)
 
 litDoc :: Lit -> Doc ann
 litDoc = \case
@@ -99,5 +138,5 @@ typeDoc_ addParensIfSpaces = \case
 
 varDoc :: Var -> Doc Ann
 varDoc = \case
-  Tyvar var _kind -> annotate AnnTyvar ("@" <> pretty var)
+  Tyvar var _kind -> annotate AnnType ("@" <> pretty var)
   Var var _type -> pretty var
