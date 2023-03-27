@@ -84,9 +84,9 @@ varToTermIdent = \case
 
 data Alternative
   = ACon Ident [Var]
-  | ATupleU [Var]
-  | ALit Lit
   | ADef
+  | ALit Lit
+  | ATupleU [Var]
   deriving stock (Eq, Show)
 
 alternativeBoundVars :: Alternative -> [Var]
@@ -318,26 +318,39 @@ renameVars expr =
 type NameSupply =
   [Text]
 
+-- FIXME top-down recursion everywhere
 renameVars1 :: Fix (X ExprF (Set Ident)) -> State.State NameSupply (Fix (X ExprF (Set Ident)))
 renameVars1 expr0@(Fix (X expr1 freeIdents)) =
   case expr1 of
-    ECaseF scrutinee (Just whnf) alternatives -> pure expr0
+    ECaseF scrutinee whnf alternatives0 -> do
+      let loop acc = \case
+            [] -> pure (Fix (X (ECaseF scrutinee whnf (reverse acc)) freeIdents))
+            (alt, body0) : alts ->
+              case alt of
+                ACon con vars0 -> do
+                  (vars, body1) <- renameVarsIn vars0 body0
+                  body2 <- renameVars1 body1
+                  loop ((ACon con vars, body2) : acc) alts
+                ATupleU vars0 -> do
+                  (vars, body1) <- renameVarsIn vars0 body0
+                  body2 <- renameVars1 body1
+                  loop ((ATupleU vars, body2) : acc) alts
+                ADef -> do
+                  body1 <- renameVars1 body0
+                  loop ((alt, body1) : acc) alts
+                ALit _ -> do
+                  body1 <- renameVars1 body0
+                  loop ((alt, body1) : acc) alts
+      loop [] alternatives0
     EJoinF point body -> pure expr0
     EJoinrecF points body -> pure expr0
     ELamF bindings0 body0 -> do
-      let loop bindings body = \case
-            [] -> pure (Fix (X (ELamF (reverse bindings) body) freeIdents))
-            var0 : vars ->
-              case var0 of
-                Var old ty -> do
-                  new <- fresh
-                  loop (Var new ty : bindings) (alphaRename old new body) vars
-                Tyvar _ _ -> loop (var0 : bindings) body vars
-      loop [] body0 bindings0
+      (bindings, body1) <- renameVarsIn bindings0 body0
+      body2 <- renameVars1 body1
+      pure (Fix (X (ELamF bindings body2) freeIdents))
     ELetF ident defn body -> pure expr0
     --
     EAppF {} -> pure expr0
-    ECaseF _ Nothing _ -> pure expr0
     EIdF {} -> pure expr0
     EJumpF -> pure expr0
     ELitF {} -> pure expr0
@@ -349,6 +362,23 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
       supply <- State.get
       State.put (tail supply)
       pure (head supply)
+
+    renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
+    renameVarIn var0 body =
+      case var0 of
+        Var old ty -> do
+          new <- fresh
+          pure (Var new ty, alphaRename old new body)
+        Tyvar _ _ -> pure (var0, body)
+
+    renameVarsIn :: [Var] -> Fix (X ExprF (Set Ident)) -> State.State NameSupply ([Var], Fix (X ExprF (Set Ident)))
+    renameVarsIn vars0 body0 =
+      let loop vars body = \case
+            [] -> pure (reverse vars, body)
+            v0 : vs -> do
+              (v1, body1) <- renameVarIn v0 body
+              loop (v1 : vars) body1 vs
+       in loop [] body0 vars0
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
 alphaRename :: Text -> Text -> Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))

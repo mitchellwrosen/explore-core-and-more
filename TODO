@@ -12,6 +12,8 @@ rename once.
 freshName :: NameSupply -> BoundVars -> Name -> (Name, NameSupply)
 ===
 
+more efficient renamer? rename a whole set at a time (not one traversal per binder)
+
 inliner: scoped = scoped1; simplify? maybe low value?
 
 curious: there's no difference bewteen
