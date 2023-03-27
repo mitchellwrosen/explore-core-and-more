@@ -66,16 +66,16 @@ safeLast = \case
 
 exprDoc_ :: Bool -> Expr -> Doc Ann
 exprDoc_ addParensIfSpaces = \case
-  EId ident ->
-    if isUpper (Text.head ident) || ident == ":" || ident == "[]" || ident == "()" || ident == "(##)"
-      then annotate AnnConstructor (pretty ident)
-      else pretty ident
+  EId ident@Ident {name} ->
+    if isUpper (Text.head name) || name == ":" || name == "[]" || name == "()" || name == "(##)"
+      then annotate AnnConstructor (identDoc ident)
+      else identDoc ident
   ELit lit -> annotate AnnLiteral (litDoc lit)
-  EApp (EId ":") (ETy _) zs@(LastElement (EApp (EId "[]") (ETy _) [])) ->
+  EApp (EVar ":") (ETy _) zs@(LastElement (EApp (EVar "[]") (ETy _) [])) ->
     annotate AnnConstructor "["
       <> hsep (punctuate (annotate AnnConstructor ",") (map exprDoc (init zs)))
       <> annotate AnnConstructor "]"
-  EApp EJump (EId ident) zs -> exprAppDoc addParensIfSpaces (EId (ident <> "🗸")) zs
+  EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "🗸")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
     (if addParensIfSpaces then (\s -> group ("(" <> s <> line' <> ")")) else group) $
@@ -186,7 +186,7 @@ alternativeDoc :: Bool -> Alternative -> Doc Ann
 alternativeDoc addParensIfSpaces = \case
   ACon con vars ->
     (if addParensIfSpaces then parens else id) $
-      hsep (annotate AnnPattern (pretty con) : map varDoc (mungeVars vars))
+      hsep (annotate AnnPattern (identDoc con) : map varDoc (mungeVars vars))
   ADef -> annotate AnnPattern "default"
   ALit lit -> annotate AnnPattern (litDoc lit)
   ATupleU vars ->
@@ -212,6 +212,10 @@ alternativesDoc alts =
     moveDefaultToBottom = \case
       x@(ADef {}, _) : xs -> xs ++ [x]
       xs -> xs
+
+identDoc :: Ident -> Doc Ann
+identDoc Ident {name} =
+  pretty name
 
 joinPointDoc :: JoinPoint -> Doc Ann
 joinPointDoc (JoinPoint name bindings body) =

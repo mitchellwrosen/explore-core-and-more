@@ -4,6 +4,14 @@ good renamer that shadows alpha, but bumps a counter
 (e.g. if "a0" goes unused (freeing up "a"), then the freshest variable would be "a1", i.e. the lowest alpha "a" plus its
 bumped counter as a suffix)
 
+===
+What even is a renamer?
+First, we'll need to annotate each term with its free variables and its used variables.
+Then, we'll traverse each node of a term, and we'll rename every binder. We know every one is ugly and we only have to
+rename once.
+freshName :: NameSupply -> BoundVars -> Name -> (Name, NameSupply)
+===
+
 inliner: scoped = scoped1; simplify? maybe low value?
 
 curious: there's no difference bewteen

@@ -1,5 +1,6 @@
 module Expr where
 
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -9,7 +10,7 @@ import Type
 data Expr
   = EApp Expr Expr [Expr]
   | ECase Expr (Maybe Text) [(Alternative, Expr)]
-  | EId Text
+  | EId Ident
   | EJoin JoinPoint Expr
   | EJoinrec [JoinPoint] Expr
   | EJump
@@ -20,12 +21,28 @@ data Expr
   | ETy Type
   deriving stock (Eq, Show)
 
+pattern EVar :: Text -> Expr
+pattern EVar var <-
+  (isEVar -> Just var)
+  where
+    EVar var = EId (Ident Nothing [] var)
+
+isEVar :: Expr -> Maybe Text
+isEVar = \case
+  EId (Ident Nothing [] var) -> Just var
+  _ -> Nothing
+
 -- TODO use this in EId
 data Ident = Ident
   { package :: Maybe Text,
     modules :: [Text],
     name :: Text
   }
+  deriving stock (Eq, Show)
+
+identVar :: Ident -> Text
+identVar Ident {package, modules, name} =
+  fromMaybe Text.empty package <> foldMap (\m -> m <> ".") modules <> name
 
 data JoinPoint
   = JoinPoint Text [Var] Expr
@@ -40,7 +57,7 @@ data Lit
 
 data Var
   = Tyvar Text (Maybe Type) -- '@foo'
-  | Var Text (Maybe Type) -- 'Foo.Bar.baz'
+  | Var Text (Maybe Type) -- 'foo'
   deriving stock (Show)
 
 instance Eq Var where
@@ -55,7 +72,7 @@ instance Ord Var where
   compare (Var _ _) (Tyvar _ _) = GT
 
 data Alternative
-  = ACon Text [Var]
+  = ACon Ident [Var]
   | ATupleU [Var]
   | ALit Lit
   | ADef
@@ -70,18 +87,18 @@ alternativeBoundVars = \case
 
 ------------------------------------------------------------------------------------------------------------------------
 
-mungeExpression :: Expr -> Expr
-mungeExpression =
+optimizeExpression :: Expr -> Expr
+optimizeExpression =
   exprFToExpr
-    . unannotateUsedVars
-    . replaceUsedVarsWithUnderscore
-    . annotateUsedVars
+    . unannotate
+    . replaceUnusedVarsWithUnderscores
+    . annotateUsedIdentifiers
     . exprToExprF
 
 data ExprF a
   = EAppF a a [a]
   | ECaseF a (Maybe Text) [(Alternative, a)]
-  | EIdF Text
+  | EIdF Ident
   | EJoinF (JoinPointF a) a
   | EJoinrecF [JoinPointF a] a
   | EJumpF
@@ -144,19 +161,26 @@ joinPointFToJoinPoint :: JoinPointF (Fix ExprF) -> JoinPoint
 joinPointFToJoinPoint (JoinPointF ident defn body) =
   JoinPoint ident defn (exprFToExpr body)
 
-data ExprAndUsedVarsF a
-  = ExprAndUsedVarsF (ExprF a) (Set Var)
+data X f x a
+  = X (f a) x
   deriving stock (Functor)
 
--- Annotate each expression with all of the variables that are used within it
-annotateUsedVars :: Fix ExprF -> Fix ExprAndUsedVarsF
-annotateUsedVars expr =
+unannotate :: Fix (X ExprF a) -> Fix ExprF
+unannotate =
+  bottomUp \(X expr _) -> expr
+
+------------------------------------------------------------------------------------------------------------------------
+-- Replace unused vars with underscores
+
+-- Annotate each expression with all of the identifiers that are used within it
+annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set Var))
+annotateUsedIdentifiers expr =
   case unfix expr of
     EAppF x y zs ->
       let (x1, v1) = recur x
           (y2, v2) = recur y
           (zs1, vs) = unzip (map recur zs)
-       in Fix (ExprAndUsedVarsF (EAppF x1 y2 zs1) (Set.unions (v1 : v2 : vs)))
+       in Fix (X (EAppF x1 y2 zs1) (Set.unions (v1 : v2 : vs)))
     ECaseF scrutinee whnf alternatives ->
       let (scrutinee1, v1) = recur scrutinee
           (alternatives1, vs) =
@@ -169,13 +193,13 @@ annotateUsedVars expr =
                          in ((alt, body1), Set.difference vs0 bound)
                 )
                 alternatives
-       in Fix (ExprAndUsedVarsF (ECaseF scrutinee1 whnf alternatives1) (Set.unions (v1 : vs)))
-    EIdF ident -> Fix (ExprAndUsedVarsF (EIdF ident) (Set.singleton (Var ident Nothing)))
+       in Fix (X (ECaseF scrutinee1 whnf alternatives1) (Set.unions (v1 : vs)))
+    EIdF ident -> Fix (X (EIdF ident) (Set.singleton (Var (identVar ident) Nothing)))
     EJoinF (JoinPointF ident vars defn) body ->
       let (defn1, v1) = recur defn
           (body1, v2) = recur body
        in Fix $
-            ExprAndUsedVarsF
+            X
               (EJoinF (JoinPointF ident vars defn1) body1)
               (Set.difference v1 (Set.fromList vars) <> Set.delete (Var ident Nothing) v2)
     EJoinrecF points body ->
@@ -190,73 +214,69 @@ annotateUsedVars expr =
                 points
        in let (body1, v1) = recur body
            in Fix $
-                ExprAndUsedVarsF
+                X
                   (EJoinrecF points1 body1)
                   (Set.unions (Set.difference v1 idents : vs))
-    EJumpF -> Fix (ExprAndUsedVarsF EJumpF Set.empty)
+    EJumpF -> Fix (X EJumpF Set.empty)
     ELamF vars body ->
       let (body1, v1) = recur body
-       in Fix (ExprAndUsedVarsF (ELamF vars body1) (Set.difference v1 (Set.fromList vars)))
+       in Fix (X (ELamF vars body1) (Set.difference v1 (Set.fromList vars)))
     ELetF ident defn body ->
       let (defn1, v1) = recur defn
           (body1, v2) = recur body
-       in Fix (ExprAndUsedVarsF (ELetF ident defn1 body1) (v1 <> Set.delete (Var ident Nothing) v2))
-    ELitF lit -> Fix (ExprAndUsedVarsF (ELitF lit) Set.empty)
+       in Fix (X (ELetF ident defn1 body1) (v1 <> Set.delete (Var ident Nothing) v2))
+    ELitF lit -> Fix (X (ELitF lit) Set.empty)
     ETupleUF exprs ->
       let (exprs1, vs) = unzip (map recur exprs)
-       in Fix (ExprAndUsedVarsF (ETupleUF exprs1) (Set.unions vs))
+       in Fix (X (ETupleUF exprs1) (Set.unions vs))
     ETyF ty ->
       Fix $
-        ExprAndUsedVarsF
+        X
           (ETyF ty)
           ( case ty of
               TId ident -> Set.singleton (Tyvar ident Nothing)
               _ -> Set.empty
           )
   where
-    recur :: Fix ExprF -> (Fix ExprAndUsedVarsF, Set Var)
+    recur :: Fix ExprF -> (Fix (X ExprF (Set Var)), Set Var)
     recur x =
-      let y@(Fix (ExprAndUsedVarsF _ v)) = annotateUsedVars x
+      let y@(Fix (X _ v)) = annotateUsedIdentifiers x
        in (y, v)
 
-unannotateUsedVars :: Fix ExprAndUsedVarsF -> Fix ExprF
-unannotateUsedVars =
-  bottomUp \(ExprAndUsedVarsF expr _usedVars) -> expr
-
-replaceUsedVarsWithUnderscore :: Fix ExprAndUsedVarsF -> Fix ExprAndUsedVarsF
-replaceUsedVarsWithUnderscore =
+replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set Var)) -> Fix (X ExprF (Set Var))
+replaceUnusedVarsWithUnderscores =
   bottomUp1 \case
-    ExprAndUsedVarsF (ECaseF scrutinee whnf alternatives) usedVars ->
+    X (ECaseF scrutinee whnf alternatives) usedVars ->
       let whnf1 :: Maybe Text
           whnf1 =
             case whnf of
               Nothing -> Nothing
               Just s ->
                 -- we know we won't shadow whnf with a pattern, so map snd (ignoring fst) is ok
-                if any (\(_, Fix (ExprAndUsedVarsF _ vars)) -> Set.member (Var s Nothing) vars) alternatives
+                if any (\(_, Fix (X _ vars)) -> Set.member (Var s Nothing) vars) alternatives
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
-          f :: (Alternative, Fix ExprAndUsedVarsF) -> (Alternative, Fix ExprAndUsedVarsF)
+          f :: (Alternative, Fix (X ExprF (Set Var))) -> (Alternative, Fix (X ExprF (Set Var)))
           f = \case
-            (ACon con vars, body@(Fix (ExprAndUsedVarsF _ bodyVars))) ->
+            (ACon con vars, body@(Fix (X _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
-            (ATupleU vars, body@(Fix (ExprAndUsedVarsF _ bodyVars))) -> (ATupleU (map (underscore bodyVars) vars), body)
+            (ATupleU vars, body@(Fix (X _ bodyVars))) -> (ATupleU (map (underscore bodyVars) vars), body)
             alt@(ALit {}, _) -> alt
             alt@(ADef, _) -> alt
-       in ExprAndUsedVarsF (ECaseF scrutinee whnf1 (map f alternatives)) usedVars
-    ExprAndUsedVarsF (EJoinF (JoinPointF ident vars defn@(Fix (ExprAndUsedVarsF _ defnVars))) body) usedVars ->
-      ExprAndUsedVarsF (EJoinF (JoinPointF ident (map (underscore defnVars) vars) defn) body) usedVars
-    expr@(ExprAndUsedVarsF (EJoinrecF points body) usedVars) -> expr
-    expr@(ExprAndUsedVarsF (ELamF bindings body) usedVars) -> expr
-    expr@(ExprAndUsedVarsF (ELetF ident defn body) usedVars) -> expr
+       in X (ECaseF scrutinee whnf1 (map f alternatives)) usedVars
+    X (EJoinF (JoinPointF ident vars defn@(Fix (X _ defnVars))) body) usedVars ->
+      X (EJoinF (JoinPointF ident (map (underscore defnVars) vars) defn) body) usedVars
+    expr@(X (EJoinrecF points body) usedVars) -> expr
+    expr@(X (ELamF bindings body) usedVars) -> expr
+    expr@(X (ELetF ident defn body) usedVars) -> expr
     --
-    expr@(ExprAndUsedVarsF EAppF {} _) -> expr
-    expr@(ExprAndUsedVarsF EIdF {} _) -> expr
-    expr@(ExprAndUsedVarsF EJumpF {} _) -> expr
-    expr@(ExprAndUsedVarsF ELitF {} _) -> expr
-    expr@(ExprAndUsedVarsF ETupleUF {} _) -> expr
-    expr@(ExprAndUsedVarsF ETyF {} _) -> expr
+    expr@(X EAppF {} _) -> expr
+    expr@(X EIdF {} _) -> expr
+    expr@(X EJumpF {} _) -> expr
+    expr@(X ELitF {} _) -> expr
+    expr@(X ETupleUF {} _) -> expr
+    expr@(X ETyF {} _) -> expr
   where
     underscore :: Set Var -> Var -> Var
     underscore used v =

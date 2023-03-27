@@ -34,7 +34,9 @@ main = do
       -- pPrintForceColor result
       -- Text.putStrLn ""
       let putTerm Term {identifier, expr} = do
-            Text.putStrLn (prettyExpr identifier (mungeExpression expr))
+            Text.putStrLn (prettyExpr identifier expr)
+            Text.putStrLn ""
+            Text.putStrLn (prettyExpr identifier (optimizeExpression expr))
             Text.putStrLn ""
       for_ (declarations result) \case
         DeclTerm term -> putTerm term
@@ -296,7 +298,7 @@ exprP_ = do
         string_ "{"
         alternatives <- many alternativeP
         string_ "}"
-        pure (ECase scrutinee whnf alternatives),
+        pure (ECase scrutinee ((\Ident {name} -> name) <$> whnf) alternatives),
       do
         ekeywordP "let"
         string_ "{"
@@ -357,7 +359,7 @@ joinPointP = do
   _ <- optional (string_ ";")
   pure (JoinPoint ident bindings body)
 
-eidentP :: P Text
+eidentP :: P Ident
 eidentP = do
   -- we don't want to accept identifiers at column 1 here
   SourcePos {sourceColumn} <- getSourcePos
@@ -369,7 +371,7 @@ eidentP = do
     _ <- modulePrefixP
     ident <- eidentStrP
     guard (ident /= "=" && not (Set.member ident keywords))
-    pure ident
+    pure (Ident Nothing [] ident)
 
 packagePrefixP :: P Text
 packagePrefixP =
@@ -407,7 +409,7 @@ eidentStrP = do
                 _ty <- typeP
                 _ <- char '}'
                 cs <- hunks
-                pure (ident <> Text.concat cs)
+                pure (identVar ident <> Text.concat cs)
             ]
         space
         pure ident,
