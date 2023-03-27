@@ -17,7 +17,7 @@ prettyExpr :: Text -> Expr -> Text
 prettyExpr ident expr =
   renderStrict (layoutPretty opts (styleAnn <$> defnDoc ident expr))
   where
-    opts = LayoutOptions {layoutPageWidth = AvailablePerLine 120 1}
+    opts = LayoutOptions {layoutPageWidth = AvailablePerLine 160 1}
 
 data Ann
   = AnnColor Color
@@ -68,10 +68,9 @@ exprDoc_ :: Bool -> Expr -> Doc Ann
 exprDoc_ addParensIfSpaces = \case
   EId ident0@Ident {name = name0} ->
     ( if isUpper (Text.head name1)
-        || name1 == "list∙"
-        || name1 == "unit∙"
-        || name1 == "tuple∙"
-        || name1 == "tuple#∙"
+        || name1 == "𝘭𝘪𝘴𝘵"
+        || name1 == "𝘵"
+        || name1 == "𝘵#"
         then annotate AnnConstructor
         else id
     )
@@ -79,13 +78,13 @@ exprDoc_ addParensIfSpaces = \case
     where
       -- rename ghc-prim:GHC.Prim.(##) and ghc-prim:GHC.Tuple.() at print-time
       name1
-        | name0 == "()" = "unit∙"
-        | name0 == "(##)" = "tuple#∙"
+        | name0 == "()" = "𝘵"
+        | name0 == "(##)" = "𝘵#"
         | otherwise = name0
       ident1 = ident0 {name = name1}
   ELit lit -> annotate AnnLiteral (litDoc lit)
   (slurpListExpr -> Just (expr, exprs)) ->
-    exprDoc_ addParensIfSpaces (EApp (EVar "list∙") expr exprs)
+    exprDoc_ addParensIfSpaces (EApp (EVar "𝘭𝘪𝘴𝘵") expr exprs)
   EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
@@ -170,8 +169,8 @@ exprDoc_ addParensIfSpaces = \case
       group (fold (punctuate hardline (map joinPointDoc defns)))
         <> hardline
         <> exprDoc body
-  ETuple x y zs -> exprDoc_ addParensIfSpaces (EApp (EVar "tuple∙") x (y : zs))
-  ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "tuple#∙") expr exprs)
+  ETuple x y zs -> exprDoc_ addParensIfSpaces (EApp (EVar "𝘵") x (y : zs))
+  ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "𝘵#") expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
 exprAppDoc :: Bool -> Expr -> [Expr] -> Doc Ann
@@ -209,14 +208,14 @@ alternativeDoc addParensIfSpaces = \case
     where
       con =
         case identVar con0 of
-          "[]" -> varIdent "nil"
-          ":" -> varIdent "cons"
+          "[]" -> varIdent "𝘯𝘪𝘭"
+          ":" -> varIdent "𝘤𝘰𝘯𝘴"
           _ -> con0
-  ADef -> annotate AnnPattern "default"
+  ADef -> annotate AnnPattern "𝘥𝘦𝘧𝘢𝘶𝘭𝘵"
   ALit lit -> annotate AnnPattern (litDoc lit)
-  ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "tuple") (var0 : var1 : vars))
-  ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "tuple#") vars)
-  AUnit -> annotate AnnPattern "unit"
+  ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "𝘵") (var0 : var1 : vars))
+  ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "𝘵#") vars)
+  AUnit -> annotate AnnPattern "𝘵"
 
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
 alternativesDoc alts =
