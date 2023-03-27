@@ -445,6 +445,7 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     ELitF {} -> pure expr0
     ETyF {} -> pure expr0
   where
+    -- FIXME hmm don't want to use something from the supply that's bound!
     fresh :: State.State NameSupply Text
     fresh = do
       supply <- State.get

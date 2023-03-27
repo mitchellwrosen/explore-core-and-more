@@ -49,7 +49,7 @@ defnDoc ident = \case
             case map varDoc (mungeVars bindings0) of
               [] -> mempty
               bindings -> hsep bindings <> space
-       in hang 2 (annotate AnnDefinition (pretty ident) <> space <> varsDoc <> "=" <> line <> exprDoc body)
+       in group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> varsDoc <> "=" <> line <> exprDoc body))
 
 exprDoc :: Expr -> Doc Ann
 exprDoc =
@@ -68,7 +68,8 @@ exprDoc_ :: Bool -> Expr -> Doc Ann
 exprDoc_ addParensIfSpaces = \case
   EId ident0@Ident {name = name0} ->
     ( if isUpper (Text.head name1)
-        || name1 == "𝘭𝘪𝘴𝘵"
+        || name1 == "𝘤𝘰𝘯𝘴"
+        || name1 == "𝘯𝘪𝘭"
         || name1 == "𝘵"
         || name1 == "𝘵#"
         then annotate AnnConstructor
@@ -84,22 +85,24 @@ exprDoc_ addParensIfSpaces = \case
       ident1 = ident0 {name = name1}
   ELit lit -> annotate AnnLiteral (litDoc lit)
   (slurpListExpr -> Just (expr, exprs)) ->
-    exprDoc_ addParensIfSpaces (EApp (EVar "𝘭𝘪𝘴𝘵") expr exprs)
+    if expr == eNil
+      then exprDoc_ addParensIfSpaces eNil
+      else exprDoc_ addParensIfSpaces (EApp eCons expr exprs)
   EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
     parenify addParensIfSpaces $
       nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> exprDoc body)
-  -- case scrutinee of {
-  --   alternative -> body
+  -- case <scrutinee> of {
+  --   <alternative> -> <body>
   -- }
   ECase scrutinee Nothing [(alternative, body)] ->
     parenify addParensIfSpaces $
       ( case alternative of
-          ADef -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+          ADef -> group (annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
           _ ->
             alternativeDoc False alternative
-              <> " = "
+              <> " ← "
               <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
       )
         <> hardline
@@ -112,9 +115,9 @@ exprDoc_ addParensIfSpaces = \case
       pretty whnf
         <> ( case alternative of
                ADef -> mempty
-               ACon {} -> "@" <> alternativeDoc True alternative
+               _ -> " = " <> alternativeDoc False alternative
            )
-        <> " = "
+        <> " ← "
         <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
         <> hardline
         <> exprDoc body
@@ -123,8 +126,8 @@ exprDoc_ addParensIfSpaces = \case
   ECase scrutinee whnf [] ->
     parenify addParensIfSpaces $
       ( case whnf of
-          Nothing -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-          Just s -> pretty s <> " = " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+          Nothing -> group (annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
+          Just s -> pretty s <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
       )
   -- case scrutinee of [whnf] {
   --   alternative1 -> body1
@@ -140,12 +143,18 @@ exprDoc_ addParensIfSpaces = \case
                   (annotate AnnKeyword "switch" <> space <> nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
               )
           Just s ->
-            pretty s
-              <> " = "
-              <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-              <> hardline
-              <> annotate AnnKeyword "switch"
+            group
+              ( flatAlt
+                  ( pretty s
+                      <> " ← "
+                      <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+                      <> hardline
+                      <> annotate AnnKeyword "switch"
+                  )
+                  (annotate AnnKeyword "switch" <> space <> pretty s <> " = " <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
+              )
       )
+        <> hardline
         <> alternativesDoc alternatives
   EJump -> error "EJump"
   ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
@@ -187,16 +196,21 @@ exprAppDoc addParensIfSpaces x ys =
           _ -> Just expr
         else Just expr
 
--- if this is a list, slurp it into its non-empty exprs. the empty list literal [] is the last such expr
+-- if this is a list, slurp it into its non-empty exprs
+--
+--   []         => Just (nil, [])
+--   x : []     => Just (x, [nil])
+--   x : xs     => Just (x, [xs])
+--   x : y : ys => Just (x, y:ys)
 slurpListExpr :: Expr -> Maybe (Expr, [Expr])
 slurpListExpr = \case
-  EApp (EVar "[]") (ETy _) [] -> Just (EVar "[]", [])
+  EApp (EVar "[]") (ETy _) [] -> Just (eNil, [])
   EApp (EVar ":") (ETy _) [lhs, rhs] -> Just (lhs, slurp rhs)
   _ -> Nothing
   where
     slurp :: Expr -> [Expr]
     slurp = \case
-      EApp (EVar "[]") (ETy _) [] -> [EVar "[]"]
+      EApp (EVar "[]") (ETy _) [] -> [eNil]
       EApp (EVar ":") (ETy _) [lhs, rhs] -> lhs : slurp rhs
       expr -> [expr]
 
@@ -218,8 +232,8 @@ alternativeDoc addParensIfSpaces = \case
   AUnit -> annotate AnnPattern "𝘵"
 
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
-alternativesDoc alts =
-  nest 2 (hardline <> go (moveDefaultToBottom alts))
+alternativesDoc =
+  go . moveDefaultToBottom
   where
     go :: [(Alternative, Expr)] -> Doc Ann
     go =
@@ -227,7 +241,14 @@ alternativesDoc alts =
 
     f :: (Alternative, Expr) -> Doc Ann
     f (alternative, body) =
-      nest 2 (alternativeDoc False alternative <> " →" <> group (line <> exprDoc body))
+      group $
+        nest 2 $
+          annotate AnnKeyword "case"
+            <> space
+            <> alternativeDoc False alternative
+            <> " →"
+            <> line
+            <> exprDoc body
 
     moveDefaultToBottom :: [(Alternative, Expr)] -> [(Alternative, Expr)]
     moveDefaultToBottom = \case
@@ -273,6 +294,14 @@ varDoc :: Var -> Doc Ann
 varDoc = \case
   Tyvar var _kind -> annotate AnnType ("@" <> pretty var)
   Var var _type -> pretty var
+
+eCons :: Expr
+eCons =
+  EVar "𝘤𝘰𝘯𝘴"
+
+eNil :: Expr
+eNil =
+  EVar "𝘯𝘪𝘭"
 
 parenify :: Bool -> Doc ann -> Doc ann
 parenify addParensIfSpaces inner =
