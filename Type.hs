@@ -7,4 +7,5 @@ data Type
   | TForall [(Text, Maybe Type)] Type
   | TFun Type Type
   | TId Text
+  | TTupleU [Type]
   deriving stock (Eq, Ord, Show)

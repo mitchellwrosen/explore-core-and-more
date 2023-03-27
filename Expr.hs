@@ -58,6 +58,7 @@ data Lit
   = LInt Text -- 0
   | LIntU Text -- 0#
   | LStrU Text -- "foobar"#
+  | LWordU Text -- 0##
   | LWord64U Text -- 0##64
   deriving stock (Eq, Show)
 
@@ -396,10 +397,10 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
     renameVarIn var0 body =
       case var0 of
-        Var old ty -> do
+        Var old ty | old /= "_" -> do
           new <- fresh
           pure (Var new ty, alphaRename old new body)
-        Tyvar _ _ -> pure (var0, body)
+        _ -> pure (var0, body)
 
     renameVarsIn :: [Var] -> Fix (X ExprF (Set Ident)) -> State.State NameSupply ([Var], Fix (X ExprF (Set Ident)))
     renameVarsIn vars0 body0 =

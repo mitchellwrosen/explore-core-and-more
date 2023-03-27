@@ -66,25 +66,39 @@ safeLast = \case
 
 exprDoc_ :: Bool -> Expr -> Doc Ann
 exprDoc_ addParensIfSpaces = \case
-  EId ident@Ident {name} ->
-    if isUpper (Text.head name) || name == ":" || name == "[]" || name == "()" || name == "(##)"
-      then annotate AnnConstructor (identDoc ident)
-      else identDoc ident
+  EId ident0@Ident {name = name0} ->
+    ( if isUpper (Text.head name1)
+        || name1 == "list∙"
+        || name1 == "tuple∙"
+        || name1 == "tuple#∙"
+        then annotate AnnConstructor
+        else id
+    )
+      (identDoc ident1)
+    where
+      -- rename ghc-prim:GHC.Prim.(##) and ghc-prim:GHC.Tuple.() at print-time
+      name1
+        | name0 == "()" = "tuple∙"
+        | name0 == "(##)" = "tuple#∙"
+        | otherwise = name0
+      ident1 = ident0 {name = name1}
   ELit lit -> annotate AnnLiteral (litDoc lit)
+  (slurpListExpr -> Just (expr, exprs)) ->
+    exprDoc_ addParensIfSpaces (EApp (EVar "list∙") expr exprs)
   EApp (EVar ":") (ETy _) zs@(LastElement (EApp (EVar "[]") (ETy _) [])) ->
     annotate AnnConstructor "["
       <> hsep (punctuate (annotate AnnConstructor ",") (map exprDoc (init zs)))
       <> annotate AnnConstructor "]"
-  EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "🗸")) zs
+  EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
-    (if addParensIfSpaces then (\s -> group ("(" <> s <> line' <> ")")) else group) $
+    parenify addParensIfSpaces $
       nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> exprDoc body)
   -- case scrutinee of {
   --   alternative -> body
   -- }
   ECase scrutinee Nothing [(alternative, body)] ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       ( case alternative of
           ADef -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
           _ ->
@@ -98,7 +112,7 @@ exprDoc_ addParensIfSpaces = \case
   --   alternative -> body
   -- }
   ECase scrutinee (Just whnf) [(alternative, body)] ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       pretty whnf
         <> ( case alternative of
                ADef -> mempty
@@ -111,7 +125,7 @@ exprDoc_ addParensIfSpaces = \case
   -- case scrutinee of [whnf] {
   -- }
   ECase scrutinee whnf [] ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       ( case whnf of
           Nothing -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
           Just s -> pretty s <> " = " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
@@ -121,7 +135,7 @@ exprDoc_ addParensIfSpaces = \case
   --   alternative2 -> body2
   -- }
   ECase scrutinee whnf alternatives ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       ( case whnf of
           Nothing ->
             group
@@ -140,38 +154,27 @@ exprDoc_ addParensIfSpaces = \case
   EJump -> error "EJump"
   ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
   ELet ident defn body ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       group (defnDoc ident defn)
         <> hardline
         <> exprDoc body
   EJoin point body ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       group (joinPointDoc point)
         <> hardline
         <> exprDoc body
   EJoinrec defns body ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       nest 2 (hsep (map joinPointDoc defns))
         <> hardline
         <> exprDoc body
-  ETupleU (expr : exprs) ->
-    group $
-      hang 1 $
-        annotate AnnConstructor "(#"
-          <> space
-          <> hang 2 (exprDoc expr)
-          <> line'
-          <> annotate AnnConstructor ","
-          <> space
-          <> fold (punctuate (line' <> annotate AnnConstructor ",") (map (align . exprDoc) exprs))
-          <> line
-          <> annotate AnnConstructor "#)"
+  ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "tuple#∙") expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
 exprAppDoc :: Bool -> Expr -> [Expr] -> Doc Ann
 exprAppDoc addParensIfSpaces x ys =
   let args = mapMaybe p ys
-   in (if addParensIfSpaces && not (null args) then parens else id) $
+   in parenify (addParensIfSpaces && not (null args)) $
         group (nest 2 (vsep (map (exprDoc_ True) (x : args))))
   where
     p :: Expr -> Maybe Expr
@@ -182,19 +185,39 @@ exprAppDoc addParensIfSpaces x ys =
           _ -> Just expr
         else Just expr
 
+-- if this is a list, slurp it into its non-empty exprs. the empty list literal [] is the last such expr
+slurpListExpr :: Expr -> Maybe (Expr, [Expr])
+slurpListExpr = \case
+  EApp (EVar "[]") (ETy _) [] -> Just (EVar "[]", [])
+  EApp (EVar ":") (ETy _) [lhs, rhs] -> Just (lhs, slurp rhs)
+  _ -> Nothing
+  where
+    slurp :: Expr -> [Expr]
+    slurp = \case
+      EApp (EVar "[]") (ETy _) [] -> [EVar "[]"]
+      EApp (EVar ":") (ETy _) [lhs, rhs] -> lhs : slurp rhs
+      expr -> [expr]
+
 alternativeDoc :: Bool -> Alternative -> Doc Ann
 alternativeDoc addParensIfSpaces = \case
-  ACon con vars ->
-    (if addParensIfSpaces then parens else id) $
+  ACon con0 vars ->
+    parenify addParensIfSpaces $
       hsep (annotate AnnPattern (identDoc con) : map varDoc (mungeVars vars))
+    where
+      con =
+        case identVar con0 of
+          "[]" -> varIdent "nil"
+          ":" -> varIdent "cons"
+          _ -> con0
   ADef -> annotate AnnPattern "default"
   ALit lit -> annotate AnnPattern (litDoc lit)
-  ATupleU vars ->
-    annotate AnnPattern "(#"
-      <> space
-      <> hsep (punctuate (annotate AnnPattern ",") (map varDoc (mungeVars vars)))
-      <> space
-      <> annotate AnnPattern "#)"
+  -- ATupleU vars ->
+  --   annotate AnnPattern "(#"
+  --     <> space
+  --     <> hsep (punctuate (annotate AnnPattern ",") (map varDoc (mungeVars vars)))
+  --     <> space
+  --     <> annotate AnnPattern "#)"
+  ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "tuple#") vars)
 
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
 alternativesDoc alts =
@@ -219,14 +242,16 @@ identDoc Ident {name} =
 
 joinPointDoc :: JoinPoint -> Doc Ann
 joinPointDoc (JoinPoint name bindings body) =
-  defnDoc (name <> "🗸") (ELam bindings body)
+  defnDoc (name <> "✓") (ELam bindings body)
 
+-- remove "#" suffixes because they aren't very informative
 litDoc :: Lit -> Doc Ann
 litDoc = \case
   LInt n -> pretty n
-  LIntU n -> pretty n <> "#"
-  LStrU s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\"#"
-  LWord64U n -> pretty n <> "#" -- eh, ##64 looks ugly and isn't very informative
+  LIntU n -> pretty n
+  LStrU s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\""
+  LWordU n -> pretty n
+  LWord64U n -> pretty n
 
 typeDoc :: Type -> Doc Ann
 typeDoc =
@@ -235,7 +260,7 @@ typeDoc =
 typeDoc_ :: Bool -> Type -> Doc Ann
 typeDoc_ addParensIfSpaces = \case
   TApp x y zs ->
-    (if addParensIfSpaces then parens else id) $
+    parenify addParensIfSpaces $
       group (nest 2 (vsep (map (typeDoc_ True) (x : y : zs))))
   TForall _ _ -> undefined
   TFun _ _ -> undefined
@@ -245,6 +270,12 @@ varDoc :: Var -> Doc Ann
 varDoc = \case
   Tyvar var _kind -> annotate AnnType ("@" <> pretty var)
   Var var _type -> pretty var
+
+parenify :: Bool -> Doc ann -> Doc ann
+parenify addParensIfSpaces inner =
+  if addParensIfSpaces
+    then group (flatAlt ("( " <> align inner <> line <> ")") (parens inner))
+    else group inner
 
 mungeVars :: [Var] -> [Var]
 mungeVars =

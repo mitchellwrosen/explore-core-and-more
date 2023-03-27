@@ -4,14 +4,6 @@ good renamer that shadows alpha, but bumps a counter
 (e.g. if "a0" goes unused (freeing up "a"), then the freshest variable would be "a1", i.e. the lowest alpha "a" plus its
 bumped counter as a suffix)
 
-===
-What even is a renamer?
-First, we'll need to annotate each term with its free variables and its used variables.
-Then, we'll traverse each node of a term, and we'll rename every binder. We know every one is ugly and we only have to
-rename once.
-freshName :: NameSupply -> BoundVars -> Name -> (Name, NameSupply)
-===
-
 more efficient renamer? rename a whole set at a time (not one traversal per binder)
 
 inliner: scoped = scoped1; simplify? maybe low value?
@@ -35,12 +27,10 @@ see if three ECase matches in pretty-printer can be extracted to one function
 
 perform experiment: matching a record to whnf that has a strict field, a strict unpacked field, and a lazy field: what's the difference?
 
-perform experiment: compare core for (TVar Int) vs (TVar ScopeStatus) code!
-
 Doc: if a value `x` is unlifted, then `!!x` is *free*
 Doc: if a value `x` is already in WHNF, then `!!x` is *free*
 
-Big improvement: use core tags to omit `!!x` calls if core tells us `x` is not a thunk somehow
-Update: it's not possible; Core doesn't say anything
-
 investgate lambda that  only takes a type argument (in $wspawn). sup with that? no runtime cost, right?
+
+module qualifier: of all symbols in the module, qualify with the least number of name segments
+to disambiguate. it's fine that it wouldn't be valid haskell due to ambiguous imports.

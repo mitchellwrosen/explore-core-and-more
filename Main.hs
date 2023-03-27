@@ -170,6 +170,7 @@ typeP = do
           [] -> ty0
           t : ts -> (TApp ty0 t ts)
       funtimes ty1
+    TTupleU {} -> funtimes ty0
   where
     funtimes ty = do
       _ <- optional (string_ "%1")
@@ -218,7 +219,11 @@ typeAtomP =
         char_ ']'
         pure (TApp (TId "[]") ty []),
       TId "()" <$ string_ "()",
-      TId "(# #)" <$ string_ "(# #)",
+      do
+        string_ "(# "
+        tys <- sepBy typeP (char_ ',')
+        string_ "#)"
+        pure (TTupleU tys),
       char_ '(' *> typeP <* char_ ')',
       TId <$> tidentP
     ]
@@ -437,6 +442,9 @@ modulePrefixP =
 
 tidentP :: P Text
 tidentP = do
+  -- make sure we don't treat '#' like an operator if it's followed by right paren
+  notFollowedBy (string "#)")
+
   tick <- string "'" <|> pure ""
   -- skip package identifier
   _ <- optional packagePrefixP
@@ -518,10 +526,13 @@ litP =
         let n = sign <> Text.cons c0 cs
         (if sign == "-" then pure Nothing else optional (string_ "##64")) >>= \case
           Nothing ->
-            optional (string_ "#") <&> \case
-              Nothing -> LInt n
-              Just () -> LIntU n
-          Just () -> pure (LWord64U (Text.cons c0 cs))
+            optional (string_ "##") >>= \case
+              Nothing ->
+                optional (string_ "#") <&> \case
+                  Nothing -> LInt n
+                  Just () -> LIntU n
+              Just () -> pure (LWordU n)
+          Just () -> pure (LWord64U n)
     ]
 
 alternativeP :: P (Alternative, Expr)
