@@ -14,6 +14,7 @@ executable explore-core-and-more
     prettyprinter ^>= 1.7,
     prettyprinter-ansi-terminal ^>= 1.1,
     text ^>= 2.0,
+    transformers ^>= 0.6,
   default-extensions:
     BlockArguments
     DeriveFunctor

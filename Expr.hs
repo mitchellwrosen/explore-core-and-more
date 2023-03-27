@@ -1,5 +1,6 @@
 module Expr where
 
+import qualified Control.Monad.Trans.State as State
 import Data.Function ((&))
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
@@ -101,6 +102,7 @@ optimizeExpression :: Expr -> Expr
 optimizeExpression =
   exprFToExpr
     . unannotate
+    . renameVars
     . replaceUnusedVarsWithUnderscores
     . annotateUsedIdentifiers
     . exprToExprF
@@ -298,3 +300,85 @@ replaceUnusedVarsWithUnderscores =
           then var
           else Var "_" ty
       var@Tyvar {} -> var
+
+renameVars :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
+renameVars expr =
+  State.evalState (renameVars1 expr) supply
+  where
+    alphabet :: [Text]
+    alphabet = map Text.singleton ['a' .. 'e']
+
+    supply :: [Text]
+    supply =
+      alphabet ++ do
+        prefix <- alphabet
+        suffix <- supply
+        pure (prefix <> suffix)
+
+type NameSupply =
+  [Text]
+
+renameVars1 :: Fix (X ExprF (Set Ident)) -> State.State NameSupply (Fix (X ExprF (Set Ident)))
+renameVars1 expr0@(Fix (X expr1 freeIdents)) =
+  case expr1 of
+    ECaseF scrutinee (Just whnf) alternatives -> pure expr0
+    EJoinF point body -> pure expr0
+    EJoinrecF points body -> pure expr0
+    ELamF bindings0 body0 -> do
+      let loop bindings body = \case
+            [] -> pure (Fix (X (ELamF (reverse bindings) body) freeIdents))
+            var0 : vars ->
+              case var0 of
+                Var old ty -> do
+                  new <- fresh
+                  loop (Var new ty : bindings) (alphaRename old new body) vars
+                Tyvar _ _ -> loop (var0 : bindings) body vars
+      loop [] body0 bindings0
+    ELetF ident defn body -> pure expr0
+    --
+    EAppF {} -> pure expr0
+    ECaseF _ Nothing _ -> pure expr0
+    EIdF {} -> pure expr0
+    EJumpF -> pure expr0
+    ELitF {} -> pure expr0
+    ETupleUF {} -> pure expr0
+    ETyF {} -> pure expr0
+  where
+    fresh :: State.State NameSupply Text
+    fresh = do
+      supply <- State.get
+      State.put (tail supply)
+      pure (head supply)
+
+-- `alphaRename old new expr` renames all free `old` to `new` in `expr`
+alphaRename :: Text -> Text -> Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
+alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
+  if Set.member oldIdent freeIdents
+    then
+      Fix
+        ( X
+            ( case expr1 of
+                EAppF x y zs -> EAppF (recur x) (recur y) (map recur zs)
+                ECaseF scrutinee whnf alternatives ->
+                  ECaseF (recur scrutinee) whnf (map (\(alt, body) -> (alt, recur body)) alternatives)
+                EIdF _ -> EIdF newIdent
+                EJoinF point body -> EJoinF (recurJoinPoint point) (recur body)
+                EJoinrecF points body -> EJoinrecF (map recurJoinPoint points) (recur body)
+                EJumpF -> expr1
+                ELamF bindings body -> ELamF bindings (recur body)
+                ELetF ident defn body -> ELetF ident (recur defn) (recur body)
+                ELitF _ -> expr1
+                ETupleUF exprs -> ETupleUF (map recur exprs)
+                ETyF _ -> expr1
+            )
+            (adjustFreeIdents freeIdents)
+        )
+    else expr0
+  where
+    oldIdent = varIdent old
+    newIdent = varIdent new
+    recur = alphaRename old new
+    adjustFreeIdents = Set.insert newIdent . Set.delete oldIdent
+
+    recurJoinPoint (JoinPointF ident bindings body) =
+      JoinPointF ident bindings (recur body)
