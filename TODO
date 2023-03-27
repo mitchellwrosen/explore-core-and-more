@@ -42,3 +42,5 @@ Doc: if a value `x` is already in WHNF, then `!!x` is *free*
 
 Big improvement: use core tags to omit `!!x` calls if core tells us `x` is not a thunk somehow
 Update: it's not possible; Core doesn't say anything
+
+investgate lambda that  only takes a type argument (in $wspawn). sup with that? no runtime cost, right?

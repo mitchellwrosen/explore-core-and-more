@@ -306,7 +306,7 @@ renameVars expr =
   State.evalState (renameVars1 expr) supply
   where
     alphabet :: [Text]
-    alphabet = map Text.singleton ['a' .. 'e']
+    alphabet = map Text.singleton ['a' .. 'z']
 
     supply :: [Text]
     supply =
@@ -318,13 +318,24 @@ renameVars expr =
 type NameSupply =
   [Text]
 
--- FIXME top-down recursion everywhere
 renameVars1 :: Fix (X ExprF (Set Ident)) -> State.State NameSupply (Fix (X ExprF (Set Ident)))
 renameVars1 expr0@(Fix (X expr1 freeIdents)) =
   case expr1 of
-    ECaseF scrutinee whnf alternatives0 -> do
+    EAppF x0 y0 zs0 -> do
+      x1 <- renameVars1 x0
+      y1 <- renameVars1 y0
+      zs1 <- traverse renameVars1 zs0
+      pure (Fix (X (EAppF x1 y1 zs1) freeIdents))
+    ECaseF scrutinee0 whnf0 alternatives0 -> do
+      scrutinee1 <- renameVars1 scrutinee0
+      (whnf1, alternatives1) <-
+        case whnf0 of
+          Nothing -> pure (Nothing, alternatives0)
+          Just old -> do
+            new <- fresh
+            pure (Just new, map (\(alt, body) -> (alt, alphaRename old new body)) alternatives0)
       let loop acc = \case
-            [] -> pure (Fix (X (ECaseF scrutinee whnf (reverse acc)) freeIdents))
+            [] -> pure (reverse acc)
             (alt, body0) : alts ->
               case alt of
                 ACon con vars0 -> do
@@ -341,20 +352,31 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
                 ALit _ -> do
                   body1 <- renameVars1 body0
                   loop ((alt, body1) : acc) alts
-      loop [] alternatives0
-    EJoinF point body -> pure expr0
-    EJoinrecF points body -> pure expr0
+      alternatives2 <- loop [] alternatives1
+      pure (Fix (X (ECaseF scrutinee1 whnf1 alternatives2) freeIdents))
+    EJoinF point0 body0 -> do
+      point1 <- renameJoinPoint point0
+      body1 <- renameVars1 body0
+      pure (Fix (X (EJoinF point1 body1) freeIdents))
+    EJoinrecF points0 body0 -> do
+      points1 <- traverse renameJoinPoint points0
+      body1 <- renameVars1 body0
+      pure (Fix (X (EJoinrecF points1 body1) freeIdents))
     ELamF bindings0 body0 -> do
       (bindings, body1) <- renameVarsIn bindings0 body0
       body2 <- renameVars1 body1
       pure (Fix (X (ELamF bindings body2) freeIdents))
-    ELetF ident defn body -> pure expr0
+    ELetF ident defn0 body0 -> do
+      defn1 <- renameVars1 defn0
+      body1 <- renameVars1 body0
+      pure (Fix (X (ELetF ident defn1 body1) freeIdents))
+    ETupleUF exprs0 -> do
+      exprs1 <- traverse renameVars1 exprs0
+      pure (Fix (X (ETupleUF exprs1) freeIdents))
     --
-    EAppF {} -> pure expr0
     EIdF {} -> pure expr0
     EJumpF -> pure expr0
     ELitF {} -> pure expr0
-    ETupleUF {} -> pure expr0
     ETyF {} -> pure expr0
   where
     fresh :: State.State NameSupply Text
@@ -362,6 +384,14 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
       supply <- State.get
       State.put (tail supply)
       pure (head supply)
+
+    renameJoinPoint ::
+      JoinPointF (Fix (X ExprF (Set Ident))) ->
+      State.State NameSupply (JoinPointF (Fix (X ExprF (Set Ident))))
+    renameJoinPoint (JoinPointF ident vars0 defn0) = do
+      (vars1, body1) <- renameVarsIn vars0 defn0
+      body2 <- renameVars1 body1
+      pure (JoinPointF ident vars1 body2)
 
     renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
     renameVarIn var0 body =

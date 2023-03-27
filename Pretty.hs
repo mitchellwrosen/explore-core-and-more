@@ -11,7 +11,7 @@ import Prettyprinter.Render.Terminal
 import Type
 
 omitTypes :: Bool
-omitTypes = False
+omitTypes = True
 
 prettyExpr :: Text -> Expr -> Text
 prettyExpr ident expr =

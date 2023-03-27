@@ -34,8 +34,8 @@ main = do
       -- pPrintForceColor result
       -- Text.putStrLn ""
       let putTerm Term {identifier, expr} = do
-            Text.putStrLn (prettyExpr identifier expr)
-            Text.putStrLn ""
+            -- Text.putStrLn (prettyExpr identifier expr)
+            -- Text.putStrLn ""
             Text.putStrLn (prettyExpr identifier (optimizeExpression expr))
             Text.putStrLn ""
       for_ (declarations result) \case
