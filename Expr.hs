@@ -1,6 +1,7 @@
 module Expr where
 
-import Data.Maybe (fromMaybe)
+import Data.Function ((&))
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -25,7 +26,7 @@ pattern EVar :: Text -> Expr
 pattern EVar var <-
   (isEVar -> Just var)
   where
-    EVar var = EId (Ident Nothing [] var)
+    EVar var = EId (varIdent var)
 
 isEVar :: Expr -> Maybe Text
 isEVar = \case
@@ -38,7 +39,11 @@ data Ident = Ident
     modules :: [Text],
     name :: Text
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Ord, Show)
+
+varIdent :: Text -> Ident
+varIdent =
+  Ident Nothing []
 
 identVar :: Ident -> Text
 identVar Ident {package, modules, name} =
@@ -71,6 +76,11 @@ instance Ord Var where
   compare (Var x _) (Var y _) = compare x y
   compare (Var _ _) (Tyvar _ _) = GT
 
+varToTermIdent :: Var -> Maybe Ident
+varToTermIdent = \case
+  Var var _ -> Just (varIdent var)
+  Tyvar {} -> Nothing
+
 data Alternative
   = ACon Ident [Var]
   | ATupleU [Var]
@@ -78,12 +88,12 @@ data Alternative
   | ADef
   deriving stock (Eq, Show)
 
-alternativeBoundVars :: Alternative -> Set Var
+alternativeBoundVars :: Alternative -> [Var]
 alternativeBoundVars = \case
-  ACon _ vars -> Set.fromList vars
-  ATupleU vars -> Set.fromList vars
-  ALit _ -> Set.empty
-  ADef -> Set.empty
+  ACon _ vars -> vars
+  ATupleU vars -> vars
+  ALit _ -> []
+  ADef -> []
 
 ------------------------------------------------------------------------------------------------------------------------
 
@@ -172,8 +182,8 @@ unannotate =
 ------------------------------------------------------------------------------------------------------------------------
 -- Replace unused vars with underscores
 
--- Annotate each expression with all of the identifiers that are used within it
-annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set Var))
+-- Annotate each expression with all of the term identifiers that are used within it
+annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set Ident))
 annotateUsedIdentifiers expr =
   case unfix expr of
     EAppF x y zs ->
@@ -188,30 +198,38 @@ annotateUsedIdentifiers expr =
               map
                 ( \(alt, body) ->
                     let bound =
-                          maybe id (\v -> Set.insert (Var v Nothing)) whnf (alternativeBoundVars alt)
+                          maybe
+                            id
+                            (\v -> (varIdent v :))
+                            whnf
+                            (mapMaybe varToTermIdent (alternativeBoundVars alt))
                      in let (body1, vs0) = recur body
-                         in ((alt, body1), Set.difference vs0 bound)
+                         in ((alt, body1), Set.difference vs0 (Set.fromList bound))
                 )
                 alternatives
        in Fix (X (ECaseF scrutinee1 whnf alternatives1) (Set.unions (v1 : vs)))
-    EIdF ident -> Fix (X (EIdF ident) (Set.singleton (Var (identVar ident) Nothing)))
+    EIdF ident -> Fix (X (EIdF ident) (Set.singleton ident))
     EJoinF (JoinPointF ident vars defn) body ->
       let (defn1, v1) = recur defn
           (body1, v2) = recur body
        in Fix $
             X
               (EJoinF (JoinPointF ident vars defn1) body1)
-              (Set.difference v1 (Set.fromList vars) <> Set.delete (Var ident Nothing) v2)
+              ( Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))
+                  <> Set.delete (varIdent ident) v2
+              )
     EJoinrecF points body ->
-      let idents = Set.fromList (map (\(JoinPointF ident _ _) -> Var ident Nothing) points)
+      let idents = Set.fromList (map (\(JoinPointF ident _ _) -> varIdent ident) points)
           (points1, vs) =
-            unzip $
-              map
+            points
+              & map
                 ( \(JoinPointF ident vars defn) ->
                     let (defn1, v1) = recur defn
-                     in (JoinPointF ident vars defn1, Set.difference v1 (Set.fromList vars <> idents))
+                     in ( JoinPointF ident vars defn1,
+                          Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars) <> idents)
+                        )
                 )
-                points
+              & unzip
        in let (body1, v1) = recur body
            in Fix $
                 X
@@ -220,30 +238,25 @@ annotateUsedIdentifiers expr =
     EJumpF -> Fix (X EJumpF Set.empty)
     ELamF vars body ->
       let (body1, v1) = recur body
-       in Fix (X (ELamF vars body1) (Set.difference v1 (Set.fromList vars)))
+       in Fix (X (ELamF vars body1) (Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))))
     ELetF ident defn body ->
-      let (defn1, v1) = recur defn
-          (body1, v2) = recur body
-       in Fix (X (ELetF ident defn1 body1) (v1 <> Set.delete (Var ident Nothing) v2))
+      let (defn1, defnFreeIdents) = recur defn
+          (body1, bodyFreeIdents) = recur body
+          expr1 = ELetF ident defn1 body1
+          exprFreeIdents = defnFreeIdents <> Set.delete (varIdent ident) bodyFreeIdents
+       in Fix (X expr1 exprFreeIdents)
     ELitF lit -> Fix (X (ELitF lit) Set.empty)
     ETupleUF exprs ->
       let (exprs1, vs) = unzip (map recur exprs)
        in Fix (X (ETupleUF exprs1) (Set.unions vs))
-    ETyF ty ->
-      Fix $
-        X
-          (ETyF ty)
-          ( case ty of
-              TId ident -> Set.singleton (Tyvar ident Nothing)
-              _ -> Set.empty
-          )
+    ETyF ty -> Fix (X (ETyF ty) Set.empty)
   where
-    recur :: Fix ExprF -> (Fix (X ExprF (Set Var)), Set Var)
+    recur :: Fix ExprF -> (Fix (X ExprF (Set Ident)), Set Ident)
     recur x =
       let y@(Fix (X _ v)) = annotateUsedIdentifiers x
        in (y, v)
 
-replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set Var)) -> Fix (X ExprF (Set Var))
+replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
 replaceUnusedVarsWithUnderscores =
   bottomUp1 \case
     X (ECaseF scrutinee whnf alternatives) usedVars ->
@@ -252,12 +265,12 @@ replaceUnusedVarsWithUnderscores =
             case whnf of
               Nothing -> Nothing
               Just s ->
-                -- we know we won't shadow whnf with a pattern, so map snd (ignoring fst) is ok
-                if any (\(_, Fix (X _ vars)) -> Set.member (Var s Nothing) vars) alternatives
+                -- we know we won't shadow whnf with a pattern, so ignoring fst is ok
+                if any (\(_, Fix (X _ idents)) -> Set.member (varIdent s) idents) alternatives
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
-          f :: (Alternative, Fix (X ExprF (Set Var))) -> (Alternative, Fix (X ExprF (Set Var)))
+          f :: (Alternative, Fix (X ExprF (Set Ident))) -> (Alternative, Fix (X ExprF (Set Ident)))
           f = \case
             (ACon con vars, body@(Fix (X _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
@@ -278,10 +291,10 @@ replaceUnusedVarsWithUnderscores =
     expr@(X ETupleUF {} _) -> expr
     expr@(X ETyF {} _) -> expr
   where
-    underscore :: Set Var -> Var -> Var
-    underscore used v =
-      if Set.member v used
-        then v
-        else case v of
-          Tyvar _ ty -> Tyvar "_" ty
-          Var _ ty -> Var "_" ty
+    underscore :: Set Ident -> Var -> Var
+    underscore freeIdents = \case
+      var@(Var v ty) ->
+        if Set.member (varIdent v) freeIdents
+          then var
+          else Var "_" ty
+      var@Tyvar {} -> var
