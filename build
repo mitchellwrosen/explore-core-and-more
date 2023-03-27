@@ -1,0 +1,12 @@
+#!/bin/bash
+
+set -e
+
+cabal clean
+cabal \
+  build \
+  -w ghc-9.4 \
+  -O \
+  --ghc-options="-fforce-recomp -ddump-simpl -ddump-to-file -dsuppress-coercion-types -dsuppress-coercions -dsuppress-core-sizes -dsuppress-idinfo -dsuppress-timestamps -dsuppress-unfoldings"
+
+fd -I -H '.dump-simpl$'
