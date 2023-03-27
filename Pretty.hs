@@ -69,6 +69,7 @@ exprDoc_ addParensIfSpaces = \case
   EId ident0@Ident {name = name0} ->
     ( if isUpper (Text.head name1)
         || name1 == "list∙"
+        || name1 == "unit∙"
         || name1 == "tuple∙"
         || name1 == "tuple#∙"
         then annotate AnnConstructor
@@ -78,17 +79,13 @@ exprDoc_ addParensIfSpaces = \case
     where
       -- rename ghc-prim:GHC.Prim.(##) and ghc-prim:GHC.Tuple.() at print-time
       name1
-        | name0 == "()" = "tuple∙"
+        | name0 == "()" = "unit∙"
         | name0 == "(##)" = "tuple#∙"
         | otherwise = name0
       ident1 = ident0 {name = name1}
   ELit lit -> annotate AnnLiteral (litDoc lit)
   (slurpListExpr -> Just (expr, exprs)) ->
     exprDoc_ addParensIfSpaces (EApp (EVar "list∙") expr exprs)
-  EApp (EVar ":") (ETy _) zs@(LastElement (EApp (EVar "[]") (ETy _) [])) ->
-    annotate AnnConstructor "["
-      <> hsep (punctuate (annotate AnnConstructor ",") (map exprDoc (init zs)))
-      <> annotate AnnConstructor "]"
   EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
@@ -158,6 +155,11 @@ exprDoc_ addParensIfSpaces = \case
       group (letBindingDoc binding)
         <> hardline
         <> exprDoc body
+  ELetrec bindings body ->
+    parenify addParensIfSpaces $
+      group (fold (punctuate hardline (map letBindingDoc bindings)))
+        <> hardline
+        <> exprDoc body
   EJoin point body ->
     parenify addParensIfSpaces $
       group (joinPointDoc point)
@@ -165,9 +167,10 @@ exprDoc_ addParensIfSpaces = \case
         <> exprDoc body
   EJoinrec defns body ->
     parenify addParensIfSpaces $
-      nest 2 (hsep (map joinPointDoc defns))
+      group (fold (punctuate hardline (map joinPointDoc defns)))
         <> hardline
         <> exprDoc body
+  ETuple x y zs -> exprDoc_ addParensIfSpaces (EApp (EVar "tuple∙") x (y : zs))
   ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "tuple#∙") expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
@@ -211,13 +214,9 @@ alternativeDoc addParensIfSpaces = \case
           _ -> con0
   ADef -> annotate AnnPattern "default"
   ALit lit -> annotate AnnPattern (litDoc lit)
-  -- ATupleU vars ->
-  --   annotate AnnPattern "(#"
-  --     <> space
-  --     <> hsep (punctuate (annotate AnnPattern ",") (map varDoc (mungeVars vars)))
-  --     <> space
-  --     <> annotate AnnPattern "#)"
+  ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "tuple") (var0 : var1 : vars))
   ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "tuple#") vars)
+  AUnit -> annotate AnnPattern "unit"
 
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
 alternativesDoc alts =
@@ -266,9 +265,10 @@ typeDoc_ addParensIfSpaces = \case
   TApp x y zs ->
     parenify addParensIfSpaces $
       group (nest 2 (vsep (map (typeDoc_ True) (x : y : zs))))
-  TForall _ _ -> undefined
-  TFun _ _ -> undefined
+  TForall _ _ -> error "TForall"
+  TFun _ _ -> error "TFun"
   TId ident -> pretty ident
+  TTuple _ _ _ -> error "TTuple"
 
 varDoc :: Var -> Doc Ann
 varDoc = \case

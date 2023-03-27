@@ -7,5 +7,6 @@ data Type
   | TForall [(Text, Maybe Type)] Type
   | TFun Type Type
   | TId Text
-  | TTupleU [Type]
+  | TTuple Type Type [Type] -- 2+ elements
+  | TTupleU [Type] -- 0+ elements: (# #), (# ty #), (# ty, ty2 #), etc
   deriving stock (Eq, Ord, Show)

@@ -37,3 +37,5 @@ to disambiguate. it's fine that it wouldn't be valid haskell due to ambiguous im
 
 run on all of containers, text, bytestring, unordered-containers, parsec
 collect golden tests
+
+determine if singleton unboxed tuple exists, and if not, split TupleU intwo two (UnitU and 2+ TupleU)

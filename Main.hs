@@ -7,7 +7,6 @@ import Data.Char
 import Data.Foldable (for_)
 import Data.Functor (void, (<&>))
 import Data.List (foldl')
-import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -22,7 +21,6 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer (decimal)
 import Text.Megaparsec.Debug
-import Text.Pretty.Simple
 import Type
 
 main :: IO ()
@@ -224,7 +222,19 @@ typeAtomP =
         tys <- sepBy typeP (char_ ',')
         string_ "#)"
         pure (TTupleU tys),
-      char_ '(' *> typeP <* char_ ')',
+      do
+        char_ '('
+        ty0 <- typeP
+        ty1 <-
+          lookAhead anySingle >>= \case
+            ',' -> do
+              _ <- anySingle
+              space
+              tys <- sepBy1 typeP (char_ ',')
+              pure (TTuple ty0 (head tys) (tail tys))
+            _ -> pure ty0
+        char_ ')'
+        pure ty1,
       TId <$> tidentP
     ]
 
@@ -254,16 +264,6 @@ exprP :: P Expr
 exprP = do
   expr0 <- exprP_
   case expr0 of
-    ELam {} -> pure expr0
-    EId {} ->
-      many exprP_ <&> \case
-        [] -> expr0
-        e : es -> (EApp expr0 e es)
-    EJump ->
-      many exprP_ <&> \case
-        [] -> expr0
-        e : es -> (EApp expr0 e es)
-    ELit {} -> pure expr0
     -- this can happen:
     --
     --   ((f x `cast` Coercion) y)
@@ -275,11 +275,23 @@ exprP = do
       es1 <- many exprP_
       pure (EApp e0 e1 (es0 ++ es1))
     ECase {} -> pure expr0
-    EJoinrec {} -> pure expr0
-    ETy {} -> error "ETy"
-    ETupleU {} -> pure expr0
-    ELet {} -> pure expr0
+    EId {} ->
+      many exprP_ <&> \case
+        [] -> expr0
+        e : es -> (EApp expr0 e es)
     EJoin {} -> pure expr0
+    EJoinrec {} -> pure expr0
+    EJump ->
+      many exprP_ <&> \case
+        [] -> expr0
+        e : es -> (EApp expr0 e es)
+    ELam {} -> pure expr0
+    ELet {} -> pure expr0
+    ELetrec {} -> pure expr0
+    ELit {} -> pure expr0
+    ETuple {} -> pure expr0
+    ETupleU {} -> pure expr0
+    ETy {} -> error "ETy"
 
 exprP_ :: P Expr
 exprP_ = do
@@ -302,6 +314,14 @@ exprP_ = do
         alternatives <- many alternativeP
         string_ "}"
         pure (ECase scrutinee ((\Ident {name} -> name) <$> whnf) alternatives),
+      do
+        ekeywordP "letrec"
+        string_ "{"
+        bindings <- some letBindingP
+        string_ "}"
+        ekeywordP "in"
+        expr <- exprP
+        pure (ELetrec bindings expr),
       do
         ekeywordP "let"
         string_ "{"
@@ -336,11 +356,20 @@ exprP_ = do
       EId <$> eidentP <* ignoreCast,
       do
         char_ '('
-        expr <- exprP
-        ignoreCast
+        expr0 <- exprP
+        expr1 <-
+          lookAhead anySingle >>= \case
+            ',' -> do
+              _ <- anySingle
+              space
+              exprs <- sepBy1 exprP (char_ ',')
+              pure (ETuple expr0 (head exprs) (tail exprs))
+            _ -> do
+              ignoreCast
+              pure expr0
         char_ ')'
         ignoreCast
-        pure expr
+        pure expr1
     ]
   where
     -- throw away: `cast` <Co:4> :: ...
@@ -356,6 +385,7 @@ letBindingP = do
   ident <- identifierP
   string_ "="
   expr <- exprP
+  _ <- optional (string_ ";")
   pure (LetBinding ident expr)
 
 joinPointP :: P JoinPoint
@@ -467,7 +497,8 @@ varP = do
     '@' -> do
       lookAhead anySingle >>= \case
         '(' -> do
-          string_ "("
+          _ <- anySingle
+          space
           var <- tyvar
           ty <- tysig
           string_ ")"
@@ -551,6 +582,14 @@ alternativeP = do
           bindings <- sepBy varP (char_ ',')
           string_ "#)"
           pure (ATupleU bindings),
+        AUnit <$ string_ "()",
+        do
+          char_ '('
+          binding0 <- varP <* char_ ','
+          binding1 <- varP
+          bindings <- many (char_ ',' *> varP)
+          char_ ')'
+          pure (ATuple binding0 binding1 bindings),
         do
           constructor <- eidentP
           bindings <- many varP
