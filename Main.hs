@@ -27,7 +27,7 @@ import Type
 
 main :: IO ()
 main = do
-  contents <- Text.decodeUtf8 <$> ByteString.readFile ".simpl/Scope.dump-simpl"
+  contents <- Text.decodeUtf8 <$> ByteString.readFile ".simpl/Demeter.dump-simpl"
   case runParser parser "" contents of
     Left err -> putStrLn (errorBundlePretty err)
     Right (result, rest) -> do
@@ -292,9 +292,7 @@ exprP_ = do
         pure (ELam bindings body),
       do
         char_ '@'
-        lookAhead anySingle >>= \case
-          '(' -> ETy <$> typeAtomP
-          _ -> ETy . TId <$> tidentP,
+        ETy <$> typeAtomP,
       do
         ekeywordP "case"
         scrutinee <- exprP
@@ -307,21 +305,19 @@ exprP_ = do
       do
         ekeywordP "let"
         string_ "{"
-        ident <- identifierP
-        string_ "="
-        expr1 <- exprP
+        binding <- letBindingP
         string_ "}"
         ekeywordP "in"
-        expr2 <- exprP
-        pure (ELet ident expr1 expr2),
+        expr <- exprP
+        pure (ELet binding expr),
       do
         ekeywordP "joinrec"
         string_ "{"
         points <- some joinPointP
         string_ "}"
         ekeywordP "in"
-        body <- exprP
-        pure (EJoinrec points body),
+        expr <- exprP
+        pure (EJoinrec points expr),
       do
         ekeywordP "join"
         string_ "{"
@@ -355,14 +351,21 @@ exprP_ = do
           _ <- takeWhile1P Nothing isDigit
           string_ "> :: ..."
 
+letBindingP :: P LetBinding
+letBindingP = do
+  ident <- identifierP
+  string_ "="
+  expr <- exprP
+  pure (LetBinding ident expr)
+
 joinPointP :: P JoinPoint
 joinPointP = do
   ident <- identifierP
   bindings <- many bindingP
   string_ "="
-  body <- exprP
+  expr <- exprP
   _ <- optional (string_ ";")
-  pure (JoinPoint ident bindings body)
+  pure (JoinPoint ident bindings expr)
 
 eidentP :: P Ident
 eidentP = do

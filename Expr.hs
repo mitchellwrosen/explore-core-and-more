@@ -17,7 +17,7 @@ data Expr
   | EJoinrec [JoinPoint] Expr
   | EJump
   | ELam [Var] Expr
-  | ELet Text Expr Expr
+  | ELet LetBinding Expr
   | ELit Lit
   | ETupleU [Expr]
   | ETy Type
@@ -49,6 +49,10 @@ varIdent =
 identVar :: Ident -> Text
 identVar Ident {package, modules, name} =
   fromMaybe Text.empty package <> foldMap (\m -> m <> ".") modules <> name
+
+data LetBinding
+  = LetBinding Text Expr
+  deriving stock (Eq, Show)
 
 data JoinPoint
   = JoinPoint Text [Var] Expr
@@ -116,10 +120,14 @@ data ExprF a
   | EJoinrecF [JoinPointF a] a
   | EJumpF
   | ELamF [Var] a
-  | ELetF Text a a
+  | ELetF (LetBindingF a) a
   | ELitF Lit
   | ETupleUF [a]
   | ETyF Type
+  deriving stock (Functor, Show)
+
+data LetBindingF a
+  = LetBindingF Text a
   deriving stock (Functor, Show)
 
 data JoinPointF a
@@ -146,7 +154,7 @@ exprToExprF = \case
   EJoinrec points body -> Fix (EJoinrecF (map joinPointToJoinPointF points) (exprToExprF body))
   EJump -> Fix EJumpF
   ELam bindings body -> Fix (ELamF bindings (exprToExprF body))
-  ELet ident defn body -> Fix (ELetF ident (exprToExprF defn) (exprToExprF body))
+  ELet binding body -> Fix (ELetF (letBindingToLetBindingF binding) (exprToExprF body))
   ELit lit -> Fix (ELitF lit)
   ETupleU exprs -> Fix (ETupleUF (map exprToExprF exprs))
   ETy ty -> Fix (ETyF ty)
@@ -161,18 +169,26 @@ exprFToExpr = \case
   Fix (EJoinrecF points body) -> EJoinrec (map joinPointFToJoinPoint points) (exprFToExpr body)
   Fix EJumpF -> EJump
   Fix (ELamF bindings body) -> ELam bindings (exprFToExpr body)
-  Fix (ELetF ident defn body) -> ELet ident (exprFToExpr defn) (exprFToExpr body)
+  Fix (ELetF binding body) -> ELet (letBindingFToLetBinding binding) (exprFToExpr body)
   Fix (ELitF lit) -> ELit lit
   Fix (ETupleUF exprs) -> ETupleU (map exprFToExpr exprs)
   Fix (ETyF ty) -> ETy ty
 
+letBindingToLetBindingF :: LetBinding -> LetBindingF (Fix ExprF)
+letBindingToLetBindingF (LetBinding ident defn) =
+  LetBindingF ident (exprToExprF defn)
+
+letBindingFToLetBinding :: LetBindingF (Fix ExprF) -> LetBinding
+letBindingFToLetBinding (LetBindingF ident defn) =
+  LetBinding ident (exprFToExpr defn)
+
 joinPointToJoinPointF :: JoinPoint -> JoinPointF (Fix ExprF)
-joinPointToJoinPointF (JoinPoint ident defn body) =
-  JoinPointF ident defn (exprToExprF body)
+joinPointToJoinPointF (JoinPoint ident bindings defn) =
+  JoinPointF ident bindings (exprToExprF defn)
 
 joinPointFToJoinPoint :: JoinPointF (Fix ExprF) -> JoinPoint
-joinPointFToJoinPoint (JoinPointF ident defn body) =
-  JoinPoint ident defn (exprFToExpr body)
+joinPointFToJoinPoint (JoinPointF ident bindings defn) =
+  JoinPoint ident bindings (exprFToExpr defn)
 
 data X f x a
   = X (f a) x
@@ -242,10 +258,10 @@ annotateUsedIdentifiers expr =
     ELamF vars body ->
       let (body1, v1) = recur body
        in Fix (X (ELamF vars body1) (Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))))
-    ELetF ident defn body ->
+    ELetF (LetBindingF ident defn) body ->
       let (defn1, defnFreeIdents) = recur defn
           (body1, bodyFreeIdents) = recur body
-          expr1 = ELetF ident defn1 body1
+          expr1 = ELetF (LetBindingF ident defn1) body1
           exprFreeIdents = defnFreeIdents <> Set.delete (varIdent ident) bodyFreeIdents
        in Fix (X expr1 exprFreeIdents)
     ELitF lit -> Fix (X (ELitF lit) Set.empty)
@@ -285,7 +301,7 @@ replaceUnusedVarsWithUnderscores =
       X (EJoinF (JoinPointF ident (map (underscore defnVars) vars) defn) body) usedVars
     expr@(X (EJoinrecF points body) usedVars) -> expr
     expr@(X (ELamF bindings body) usedVars) -> expr
-    expr@(X (ELetF ident defn body) usedVars) -> expr
+    expr@(X (ELetF (LetBindingF ident defn) body) usedVars) -> expr
     --
     expr@(X EAppF {} _) -> expr
     expr@(X EIdF {} _) -> expr
@@ -367,10 +383,10 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
       (bindings, body1) <- renameVarsIn bindings0 body0
       body2 <- renameVars1 body1
       pure (Fix (X (ELamF bindings body2) freeIdents))
-    ELetF ident defn0 body0 -> do
-      defn1 <- renameVars1 defn0
+    ELetF binding0 body0 -> do
+      binding1 <- renameLetBinding binding0
       body1 <- renameVars1 body0
-      pure (Fix (X (ELetF ident defn1 body1) freeIdents))
+      pure (Fix (X (ELetF binding1 body1) freeIdents))
     ETupleUF exprs0 -> do
       exprs1 <- traverse renameVars1 exprs0
       pure (Fix (X (ETupleUF exprs1) freeIdents))
@@ -386,13 +402,20 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
       State.put (tail supply)
       pure (head supply)
 
+    renameLetBinding ::
+      LetBindingF (Fix (X ExprF (Set Ident))) ->
+      State.State NameSupply (LetBindingF (Fix (X ExprF (Set Ident))))
+    renameLetBinding (LetBindingF ident defn0) = do
+      defn1 <- renameVars1 defn0
+      pure (LetBindingF ident defn1)
+
     renameJoinPoint ::
       JoinPointF (Fix (X ExprF (Set Ident))) ->
       State.State NameSupply (JoinPointF (Fix (X ExprF (Set Ident))))
     renameJoinPoint (JoinPointF ident vars0 defn0) = do
-      (vars1, body1) <- renameVarsIn vars0 defn0
-      body2 <- renameVars1 body1
-      pure (JoinPointF ident vars1 body2)
+      (vars1, defn1) <- renameVarsIn vars0 defn0
+      defn2 <- renameVars1 defn1
+      pure (JoinPointF ident vars1 defn2)
 
     renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
     renameVarIn var0 body =
@@ -427,7 +450,7 @@ alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
                 EJoinrecF points body -> EJoinrecF (map recurJoinPoint points) (recur body)
                 EJumpF -> expr1
                 ELamF bindings body -> ELamF bindings (recur body)
-                ELetF ident defn body -> ELetF ident (recur defn) (recur body)
+                ELetF binding body -> ELetF (recurLetBinding binding) (recur body)
                 ELitF _ -> expr1
                 ETupleUF exprs -> ETupleUF (map recur exprs)
                 ETyF _ -> expr1
@@ -441,5 +464,5 @@ alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
     recur = alphaRename old new
     adjustFreeIdents = Set.insert newIdent . Set.delete oldIdent
 
-    recurJoinPoint (JoinPointF ident bindings body) =
-      JoinPointF ident bindings (recur body)
+    recurLetBinding (LetBindingF ident defn) = LetBindingF ident (recur defn)
+    recurJoinPoint (JoinPointF ident bindings defn) = JoinPointF ident bindings (recur defn)

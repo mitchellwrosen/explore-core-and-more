@@ -34,3 +34,6 @@ investgate lambda that  only takes a type argument (in $wspawn). sup with that? 
 
 module qualifier: of all symbols in the module, qualify with the least number of name segments
 to disambiguate. it's fine that it wouldn't be valid haskell due to ambiguous imports.
+
+run on all of containers, text, bytestring, unordered-containers, parsec
+collect golden tests

@@ -153,9 +153,9 @@ exprDoc_ addParensIfSpaces = \case
         <> alternativesDoc alternatives
   EJump -> error "EJump"
   ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
-  ELet ident defn body ->
+  ELet binding body ->
     parenify addParensIfSpaces $
-      group (defnDoc ident defn)
+      group (letBindingDoc binding)
         <> hardline
         <> exprDoc body
   EJoin point body ->
@@ -240,9 +240,13 @@ identDoc :: Ident -> Doc Ann
 identDoc Ident {name} =
   pretty name
 
+letBindingDoc :: LetBinding -> Doc Ann
+letBindingDoc (LetBinding name defn) =
+  defnDoc name defn
+
 joinPointDoc :: JoinPoint -> Doc Ann
-joinPointDoc (JoinPoint name bindings body) =
-  defnDoc (name <> "✓") (ELam bindings body)
+joinPointDoc (JoinPoint name bindings defn) =
+  defnDoc (name <> "✓") (ELam bindings defn)
 
 -- remove "#" suffixes because they aren't very informative
 litDoc :: Lit -> Doc Ann
