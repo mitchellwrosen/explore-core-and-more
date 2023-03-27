@@ -11,7 +11,7 @@ import Prettyprinter.Render.Terminal
 import Type
 
 omitTypes :: Bool
-omitTypes = True
+omitTypes = False
 
 prettyExpr :: Text -> Expr -> Text
 prettyExpr ident expr =
@@ -22,6 +22,7 @@ prettyExpr ident expr =
 data Ann
   = AnnColor Color
   | AnnConstructor
+  | AnnPattern
   | AnnDefinition
   | AnnKeyword
   | AnnLiteral
@@ -30,7 +31,8 @@ data Ann
 styleAnn :: Ann -> AnsiStyle
 styleAnn = \case
   AnnColor c -> color c
-  AnnConstructor -> colorDull Yellow <> bold
+  AnnConstructor -> color Cyan
+  AnnPattern -> colorDull Yellow <> bold
   AnnDefinition -> color Green <> bold
   AnnKeyword -> bold
   AnnLiteral -> color Magenta
@@ -68,43 +70,72 @@ exprDoc_ addParensIfSpaces = \case
     if isUpper (Text.head ident) || ident == ":" || ident == "[]" || ident == "()" || ident == "(##)"
       then annotate AnnConstructor (pretty ident)
       else pretty ident
-  ELit lit -> litDoc lit
+  ELit lit -> annotate AnnLiteral (litDoc lit)
   EApp (EId ":") (ETy _) zs@(LastElement (EApp (EId "[]") (ETy _) [])) ->
     annotate AnnConstructor "["
       <> hsep (punctuate (annotate AnnConstructor ",") (map exprDoc (init zs)))
       <> annotate AnnConstructor "]"
-  -- (name <>
   EApp EJump (EId ident) zs -> exprAppDoc addParensIfSpaces (EId (ident <> "🗸")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body ->
-    (if addParensIfSpaces then parens else id) $
-      nest 2 $
-        "\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> exprDoc body
+    (if addParensIfSpaces then (\s -> group ("(" <> s <> line' <> ")")) else group) $
+      nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> exprDoc body)
+  -- case scrutinee of {
+  --   alternative -> body
+  -- }
   ECase scrutinee Nothing [(alternative, body)] ->
     (if addParensIfSpaces then parens else id) $
       ( case alternative of
-          ADef -> mempty
-          _ -> alternativeDoc False alternative <> " ← "
+          ADef -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+          _ ->
+            alternativeDoc False alternative
+              <> " = "
+              <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
       )
+        <> hardline
+        <> exprDoc body
+  -- case scrutinee of whnf {
+  --   alternative -> body
+  -- }
+  ECase scrutinee (Just whnf) [(alternative, body)] ->
+    (if addParensIfSpaces then parens else id) $
+      pretty whnf
+        <> ( case alternative of
+               ADef -> mempty
+               ACon {} -> "@" <> alternativeDoc True alternative
+           )
+        <> " = "
         <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
         <> hardline
         <> exprDoc body
-  ECase scrutinee (Just whnf) [(alternative, body)] ->
+  -- case scrutinee of [whnf] {
+  -- }
+  ECase scrutinee whnf [] ->
     (if addParensIfSpaces then parens else id) $
-      case alternative of
-        ADef ->
-          pretty whnf
-            <> " ← "
-            <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-            <> hardline
-            <> exprDoc body
+      ( case whnf of
+          Nothing -> group (nest 2 (annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+          Just s -> pretty s <> " = " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+      )
+  -- case scrutinee of [whnf] {
+  --   alternative1 -> body1
+  --   alternative2 -> body2
+  -- }
   ECase scrutinee whnf alternatives ->
     (if addParensIfSpaces then parens else id) $
       ( case whnf of
-          Nothing -> mempty
-          Just s -> pretty s <> " ← "
+          Nothing ->
+            group
+              ( flatAlt
+                  (annotate (AnnColor Red) "‼" <> exprDoc scrutinee <> hardline <> annotate AnnKeyword "switch")
+                  (annotate AnnKeyword "switch" <> space <> nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+              )
+          Just s ->
+            pretty s
+              <> " = "
+              <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
+              <> hardline
+              <> annotate AnnKeyword "switch"
       )
-        <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
         <> alternativesDoc alternatives
   EJump -> error "EJump"
   ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
@@ -123,12 +154,19 @@ exprDoc_ addParensIfSpaces = \case
       nest 2 (hsep (map joinPointDoc defns))
         <> hardline
         <> exprDoc body
-  ETupleU exprs ->
-    annotate AnnConstructor "(#"
-      <> space
-      <> hsep (punctuate (annotate AnnConstructor ",") (map exprDoc exprs))
-      <> space
-      <> annotate AnnConstructor "#)"
+  ETupleU (expr : exprs) ->
+    group $
+      hang 1 $
+        annotate AnnConstructor "(#"
+          <> space
+          <> hang 2 (exprDoc expr)
+          <> line'
+          <> annotate AnnConstructor ","
+          <> space
+          <> fold (punctuate (line' <> annotate AnnConstructor ",") (map (align . exprDoc) exprs))
+          <> line
+          <> annotate AnnConstructor "#)"
+  ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
 exprAppDoc :: Bool -> Expr -> [Expr] -> Doc Ann
 exprAppDoc addParensIfSpaces x ys =
@@ -148,20 +186,19 @@ alternativeDoc :: Bool -> Alternative -> Doc Ann
 alternativeDoc addParensIfSpaces = \case
   ACon con vars ->
     (if addParensIfSpaces then parens else id) $
-      hsep (annotate AnnConstructor (pretty con) : map varDoc (mungeVars vars))
-  ADef -> "_"
-  ALit lit -> litDoc lit
+      hsep (annotate AnnPattern (pretty con) : map varDoc (mungeVars vars))
+  ADef -> annotate AnnPattern "default"
+  ALit lit -> annotate AnnPattern (litDoc lit)
   ATupleU vars ->
-    annotate AnnConstructor "(#"
+    annotate AnnPattern "(#"
       <> space
-      <> hsep (punctuate (annotate AnnConstructor ",") (map varDoc (mungeVars vars)))
+      <> hsep (punctuate (annotate AnnPattern ",") (map varDoc (mungeVars vars)))
       <> space
-      <> annotate AnnConstructor "#)"
+      <> annotate AnnPattern "#)"
 
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
-alternativesDoc = \case
-  [] -> mempty
-  alts -> hardline <> nest 2 (annotate AnnKeyword "switch" <> hardline <> go (moveDefaultToBottom alts))
+alternativesDoc alts =
+  nest 2 (hardline <> go (moveDefaultToBottom alts))
   where
     go :: [(Alternative, Expr)] -> Doc Ann
     go =
@@ -181,12 +218,11 @@ joinPointDoc (JoinPoint name bindings body) =
   defnDoc (name <> "🗸") (ELam bindings body)
 
 litDoc :: Lit -> Doc Ann
-litDoc =
-  annotate AnnLiteral . \case
-    LInt n -> pretty n
-    LIntU n -> pretty n <> "#"
-    LStrU s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\"#"
-    LWord64U n -> pretty n <> "#" -- eh, ##64 looks ugly and isn't very informative
+litDoc = \case
+  LInt n -> pretty n
+  LIntU n -> pretty n <> "#"
+  LStrU s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\"#"
+  LWord64U n -> pretty n <> "#" -- eh, ##64 looks ugly and isn't very informative
 
 typeDoc :: Type -> Doc Ann
 typeDoc =

@@ -330,24 +330,28 @@ exprP_ = do
         string_ "#)"
         pure (ETupleU exprs),
       ELit <$> litP,
-      EId <$> eidentP,
+      EId <$> eidentP <* ignoreCast,
       do
         char_ '('
         expr <- exprP
-        -- throw away: `cast` <Co:4> :: ...
-        _ <-
-          optional do
-            string_ "`cast` <Co:"
-            _ <- takeWhile1P Nothing isDigit
-            string_ "> :: ..."
+        ignoreCast
         char_ ')'
+        ignoreCast
         pure expr
     ]
+  where
+    -- throw away: `cast` <Co:4> :: ...
+    ignoreCast =
+      void do
+        optional do
+          string_ "`cast` <Co:"
+          _ <- takeWhile1P Nothing isDigit
+          string_ "> :: ..."
 
 joinPointP :: P JoinPoint
 joinPointP = do
   ident <- identifierP
-  bindings <- some bindingP
+  bindings <- many bindingP
   string_ "="
   body <- exprP
   _ <- optional (string_ ";")
@@ -384,40 +388,34 @@ eidentStrP = do
         -- make sure we don't treat '#' like an operator if it's followed by right paren
         notFollowedBy (string "#)")
 
-        c0 <- satisfy \c -> isAlpha c || isOperator c || c == '_' || c == '\''
-        cs <-
-          takeWhileP
-            Nothing
-            (\c -> isAlphaNum c || isOperator c || c == '_' || c == '\'' || c == ':')
+        ident <- do
+          let hunks =
+                many do
+                  asum
+                    [ takeWhile1P Nothing \c -> isAlphaNum c || isOperator c || c == '_' || c == '\'' || c == ':',
+                      string "(,)"
+                    ]
+          asum
+            [ do
+                c0 <- satisfy \c -> isAlpha c || isOperator c || c == '_' || c == '\''
+                cs <- hunks
+                pure (Text.cons c0 (Text.concat cs)),
+              do
+                _ <- string "{__ffi_static_ccall_unsafe "
+                ident <- eidentP
+                string_ "::"
+                _ty <- typeP
+                _ <- char '}'
+                cs <- hunks
+                pure (ident <> Text.concat cs)
+            ]
         space
-        pure (Text.cons c0 cs),
+        pure ident,
       ":" <$ string_ ":", -- fixme couldn't this be an operator or something, not cons
       "[]" <$ string_ "[]",
       "()" <$ string_ "()",
       "(##)" <$ string_ "(##)"
     ]
-  where
-    isOperator c =
-      c == '!'
-        || c == '#'
-        || c == '$'
-        || c == '%'
-        || c == '&'
-        || c == '*'
-        || c == '+'
-        || c == '-'
-        || c == '.'
-        || c == '/'
-        || c == ':'
-        || c == '<'
-        || c == '='
-        || c == '>'
-        || c == '?'
-        || c == '@'
-        || c == '\\'
-        || c == '^'
-        || c == '|'
-        || c == '~'
 
 ekeywordP :: Text -> P ()
 ekeywordP s =
@@ -441,8 +439,8 @@ tidentP = do
   -- skip package identifier
   _ <- optional packagePrefixP
   _ <- modulePrefixP
-  c0 <- satisfy \c -> isAlpha c || c == '_' || c == '\'' || c == '*'
-  cs <- takeWhileP Nothing \c -> isAlphaNum c || c == '_' || c == '\'' || c == '#'
+  c0 <- satisfy \c -> isAlpha c || isOperator c || c == '_' || c == '\''
+  cs <- takeWhileP Nothing \c -> isAlphaNum c || isOperator c || c == '_' || c == '\''
   let ident = tick <> Text.cons c0 cs
   -- tyvars sometimes have some skolem info like @a[sk:1]
   when (isLower (Text.head ident)) do
@@ -465,7 +463,7 @@ varP = do
           var <- tyvar
           pure (Tyvar var Nothing)
     c0 -> do
-      cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_' || c == '\'' || c == '$')
+      cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_' || c == '\'' || c == '$' || c == '#')
       space
       ty <- optional tysig
       pure (Var (Text.cons c0 cs) ty)
@@ -529,19 +527,18 @@ alternativeP = do
   alt <-
     asum
       [ do
-          _ <- lookAhead (satisfy isAlpha)
-          constructor <- eidentP
-          bindings <- many varP
-          pure (ACon constructor bindings),
+          string_ "__DEFAULT"
+          pure ADef,
+        ALit <$> litP,
         do
           string_ "(#"
           bindings <- sepBy varP (char_ ',')
           string_ "#)"
           pure (ATupleU bindings),
-        ALit <$> litP,
         do
-          string_ "__DEFAULT"
-          pure ADef
+          constructor <- eidentP
+          bindings <- many varP
+          pure (ACon constructor bindings)
       ]
   string_ "->"
   expr <- exprP
@@ -567,3 +564,26 @@ keywords =
       "let",
       "of"
     ]
+
+isOperator :: Char -> Bool
+isOperator c =
+  c == '!'
+    || c == '#'
+    || c == '$'
+    || c == '%'
+    || c == '&'
+    || c == '*'
+    || c == '+'
+    || c == '-'
+    || c == '.'
+    || c == '/'
+    || c == ':'
+    || c == '<'
+    || c == '='
+    || c == '>'
+    || c == '?'
+    || c == '@'
+    || c == '\\'
+    || c == '^'
+    || c == '|'
+    || c == '~'

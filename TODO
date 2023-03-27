@@ -1,0 +1,34 @@
+properly parse Cast only to throw it away during an expr compiler phase
+
+good renamer that shadows alpha, but bumps a counter
+(e.g. if "a0" goes unused (freeing up "a"), then the freshest variable would be "a1", i.e. the lowest alpha "a" plus its
+bumped counter as a suffix)
+
+inliner: scoped = scoped1; simplify? maybe low value?
+
+curious: there's no difference bewteen
+
+  ScopedClosing <- !!foo
+  UnsafeRefl _ <- !!bar
+
+and
+
+  !!foo
+  !!bar
+
+because it's not the lhs that determines the evaluation degree, it's the rhs (!! means to whnf). maybe that means we
+should rewrite to toss the redundant pattern, but would that make code harder to read? (are these things' types unclear?)
+
+then rewrite LHS with RHS or vice-versa everywhere (requires capture-avoiding substitution pass?)
+
+see if three ECase matches in pretty-printer can be extracted to one function
+
+perform experiment: matching a record to whnf that has a strict field, a strict unpacked field, and a lazy field: what's the difference?
+
+perform experiment: compare core for (TVar Int) vs (TVar ScopeStatus) code!
+
+Doc: if a value `x` is unlifted, then `!!x` is *free*
+Doc: if a value `x` is already in WHNF, then `!!x` is *free*
+
+Big improvement: use core tags to omit `!!x` calls if core tells us `x` is not a thunk somehow
+Update: it's not possible; Core doesn't say anything
