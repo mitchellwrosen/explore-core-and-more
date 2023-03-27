@@ -3,6 +3,7 @@ module Expr where
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Type
 
 data Expr
@@ -188,10 +189,10 @@ annotateUsedVars expr =
                 )
                 points
        in let (body1, v1) = recur body
-       in Fix $
-            ExprAndUsedVarsF
-              (EJoinrecF points1 body1)
-              (Set.unions (Set.difference v1 idents : vs))
+           in Fix $
+                ExprAndUsedVarsF
+                  (EJoinrecF points1 body1)
+                  (Set.unions (Set.difference v1 idents : vs))
     EJumpF -> Fix (ExprAndUsedVarsF EJumpF Set.empty)
     ELamF vars body ->
       let (body1, v1) = recur body
@@ -226,14 +227,24 @@ replaceUsedVarsWithUnderscore :: Fix ExprAndUsedVarsF -> Fix ExprAndUsedVarsF
 replaceUsedVarsWithUnderscore =
   bottomUp1 \case
     ExprAndUsedVarsF (ECaseF scrutinee whnf alternatives) usedVars ->
-      let f :: (Alternative, Fix ExprAndUsedVarsF) -> (Alternative, Fix ExprAndUsedVarsF)
+      let whnf1 :: Maybe Text
+          whnf1 =
+            case whnf of
+              Nothing -> Nothing
+              Just s ->
+                -- we know we won't shadow whnf with a pattern, so map snd (ignoring fst) is ok
+                if any (\(_, Fix (ExprAndUsedVarsF _ vars)) -> Set.member (Var s Nothing) vars) alternatives
+                  then Just s
+                  else -- no pattern used whnf (yet GHC named it anyway)
+                    Nothing
+          f :: (Alternative, Fix ExprAndUsedVarsF) -> (Alternative, Fix ExprAndUsedVarsF)
           f = \case
             (ACon con vars, body@(Fix (ExprAndUsedVarsF _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
             (ATupleU vars, body@(Fix (ExprAndUsedVarsF _ bodyVars))) -> (ATupleU (map (underscore bodyVars) vars), body)
             alt@(ALit {}, _) -> alt
             alt@(ADef, _) -> alt
-       in ExprAndUsedVarsF (ECaseF scrutinee whnf (map f alternatives)) usedVars
+       in ExprAndUsedVarsF (ECaseF scrutinee whnf1 (map f alternatives)) usedVars
     ExprAndUsedVarsF (EJoinF (JoinPointF ident vars defn@(Fix (ExprAndUsedVarsF _ defnVars))) body) usedVars ->
       ExprAndUsedVarsF (EJoinF (JoinPointF ident (map (underscore defnVars) vars) defn) body) usedVars
     expr@(ExprAndUsedVarsF (EJoinrecF points body) usedVars) -> expr

@@ -105,8 +105,7 @@ exprDoc_ addParensIfSpaces = \case
           Just s -> pretty s <> " ← "
       )
         <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-        <> hardline
-        <> nest 2 (annotate AnnKeyword "switch" <> alternativesDoc alternatives)
+        <> alternativesDoc alternatives
   EJump -> error "EJump"
   ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
   ELet ident defn body ->
@@ -162,7 +161,7 @@ alternativeDoc addParensIfSpaces = \case
 alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
 alternativesDoc = \case
   [] -> mempty
-  alts -> hardline <> go (moveDefaultToBottom alts)
+  alts -> hardline <> nest 2 (annotate AnnKeyword "switch" <> hardline <> go (moveDefaultToBottom alts))
   where
     go :: [(Alternative, Expr)] -> Doc Ann
     go =
