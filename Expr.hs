@@ -359,8 +359,8 @@ renameVars expr =
     supply :: [Text]
     supply =
       alphabet ++ do
-        prefix <- alphabet
         suffix <- supply
+        prefix <- alphabet
         pure (prefix <> suffix)
 
 type NameSupply =
