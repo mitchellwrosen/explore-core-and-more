@@ -1,9 +1,12 @@
 module Pretty where
 
+import qualified Control.Monad.Trans.State.Strict as State
+import qualified Control.Monad.Trans.Writer.CPS as Writer
 import Data.Char (isUpper)
 import Data.Foldable (fold)
 import Data.Function ((&))
 import Data.Maybe (mapMaybe)
+import Data.Monoid (Endo)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Expr
@@ -14,11 +17,21 @@ import Type
 omitTypes :: Bool
 omitTypes = True
 
+liftLocalDefinitions :: Bool
+liftLocalDefinitions = True
+
 prettyExpr :: Text -> Expr -> Text
 prettyExpr ident expr =
-  renderStrict (layoutPretty opts (styleAnn <$> defnDoc ident expr))
+  renderStrict (layoutPretty opts (styleAnn <$> doc))
   where
     opts = LayoutOptions {layoutPageWidth = AvailablePerLine 160 1}
+
+    doc :: Doc Ann
+    doc =
+      defnDoc ident expr
+        & Writer.runWriterT
+        & (`State.evalState` [])
+        & (\(doc0, _localDefns) -> doc0)
 
 data Ann
   = AnnColor Color
@@ -39,14 +52,15 @@ styleAnn = \case
   AnnLiteral -> color Magenta
   AnnType -> color Blue
 
-defnDoc :: Text -> Expr -> Doc Ann
+defnDoc :: Text -> Expr -> M (Doc Ann)
 defnDoc ident = \case
   ELam bindings body -> go bindings body
   expr -> go [] expr
   where
-    go :: [Var] -> Expr -> Doc Ann
-    go bindings body =
-      group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> exprDoc body))
+    go :: [Var] -> Expr -> M (Doc Ann)
+    go bindings body = do
+      bodyDoc <- exprDoc body
+      pure (group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> bodyDoc)))
 
 bindingsDoc :: [Var] -> Doc Ann
 bindingsDoc =
@@ -56,31 +70,29 @@ bindingsDoc =
       [] -> mempty
       bindings -> hsep bindings <> space
 
-exprDoc :: Expr -> Doc Ann
+type M a =
+  Writer.WriterT (Endo [LocalDefn]) (State.State [Text]) a
+
+data LocalDefn
+  = Let [Text] Expr
+
+exprDoc :: Expr -> M (Doc Ann)
 exprDoc =
   exprDoc_ False
 
-pattern LastElement :: a -> [a]
-pattern LastElement x <- (safeLast -> Just x)
-
-safeLast :: [a] -> Maybe a
-safeLast = \case
-  [] -> Nothing
-  [x] -> Just x
-  _ : xs -> safeLast xs
-
-exprDoc_ :: Bool -> Expr -> Doc Ann
+exprDoc_ :: Bool -> Expr -> M (Doc Ann)
 exprDoc_ addParensIfSpaces = \case
   EId ident0@Ident {name = name0} ->
-    ( if isUpper (Text.head name1)
-        || name1 == "𝘤𝘰𝘯𝘴"
-        || name1 == "𝘯𝘪𝘭"
-        || name1 == "𝘵"
-        || name1 == "𝘵#"
-        then annotate AnnConstructor
-        else id
-    )
-      (identDoc ident1)
+    pure do
+      ( if isUpper (Text.head name1)
+          || name1 == "𝘤𝘰𝘯𝘴"
+          || name1 == "𝘯𝘪𝘭"
+          || name1 == "𝘵"
+          || name1 == "𝘵#"
+          then annotate AnnConstructor
+          else id
+        )
+        (identDoc ident1)
     where
       -- rename ghc-prim:GHC.Prim.(##) and ghc-prim:GHC.Tuple.() at print-time
       name1
@@ -88,19 +100,21 @@ exprDoc_ addParensIfSpaces = \case
         | name0 == "(##)" = "𝘵#"
         | otherwise = name0
       ident1 = ident0 {name = name1}
-  ELit lit -> annotate AnnLiteral (litDoc lit)
+  ELit lit -> pure (annotate AnnLiteral (litDoc lit))
   (slurpListExpr -> Just (expr, exprs)) ->
     if expr == eNil
       then exprDoc_ addParensIfSpaces eNil
       else exprDoc_ addParensIfSpaces (EApp eCons expr exprs)
   EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
-  ELam bindings body ->
-    parenify addParensIfSpaces $
-      nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> exprDoc body)
+  ELam bindings body -> do
+    bodyDoc <- exprDoc body
+    pure $
+      parenify addParensIfSpaces $
+        nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> bodyDoc)
   ECase scrutinee whnf alternatives -> exprCaseDoc addParensIfSpaces scrutinee whnf alternatives
   EJump -> error "EJump"
-  ETy ty -> annotate AnnType ("@" <> typeDoc_ True ty)
+  ETy ty -> pure (annotate AnnType ("@" <> typeDoc_ True ty))
   ELet binding body -> exprLetDoc addParensIfSpaces binding body
   ELetrec bindings body -> exprLetrecDoc addParensIfSpaces bindings body
   EJoin point body -> exprJoinDoc addParensIfSpaces point body
@@ -109,11 +123,11 @@ exprDoc_ addParensIfSpaces = \case
   ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "𝘵#") expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
-exprAppDoc :: Bool -> Expr -> [Expr] -> Doc Ann
-exprAppDoc addParensIfSpaces x ys =
+exprAppDoc :: Bool -> Expr -> [Expr] -> M (Doc Ann)
+exprAppDoc addParensIfSpaces x ys = do
   let args = mapMaybe p ys
-   in parenify (addParensIfSpaces && not (null args)) $
-        group (nest 2 (vsep (map (exprDoc_ True) (x : args))))
+  docs <- traverse (exprDoc_ True) (x : args)
+  pure (parenify (addParensIfSpaces && not (null args)) (group (nest 2 (vsep docs))))
   where
     p :: Expr -> Maybe Expr
     p expr =
@@ -126,111 +140,139 @@ exprAppDoc addParensIfSpaces x ys =
 -- case <scrutinee> of {
 --   <alternative> -> <body>
 -- }
-exprCaseDoc :: Bool -> Expr -> Maybe Text -> [(Alternative, Expr)] -> Doc Ann
-exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] =
-  parenify addParensIfSpaces $
-    ( case alternative of
-        ADef -> group (annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
-        _ ->
-          alternativeDoc False alternative
-            <> " ← "
-            <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-    )
-      <> hardline
-      <> exprDoc body
+exprCaseDoc :: Bool -> Expr -> Maybe Text -> [(Alternative, Expr)] -> M (Doc Ann)
+exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
+  scrutineeDoc <- exprDoc scrutinee
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      ( case alternative of
+          ADef -> group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
+          _ ->
+            alternativeDoc False alternative
+              <> " ← "
+              <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+      )
+        <> hardline
+        <> bodyDoc
 -- case scrutinee of whnf {
 --   alternative -> body
 -- }
-exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] =
-  parenify addParensIfSpaces $
-    pretty whnf
-      <> ( case alternative of
-             ADef -> mempty
-             _ -> " = " <> alternativeDoc False alternative
-         )
-      <> " ← "
-      <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-      <> hardline
-      <> exprDoc body
+exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
+  scrutineeDoc <- exprDoc scrutinee
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      pretty whnf
+        <> ( case alternative of
+               ADef -> mempty
+               _ -> " = " <> alternativeDoc False alternative
+           )
+        <> " ← "
+        <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+        <> hardline
+        <> bodyDoc
 -- case scrutinee of [whnf] {
 -- }
-exprCaseDoc addParensIfSpaces scrutinee whnf [] =
-  parenify addParensIfSpaces $
-    ( case whnf of
-        Nothing -> group (annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
-        Just s -> pretty s <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-    )
+exprCaseDoc addParensIfSpaces scrutinee whnf [] = do
+  scrutineeDoc <- exprDoc scrutinee
+  pure $
+    parenify addParensIfSpaces $
+      ( case whnf of
+          Nothing -> group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
+          Just s -> pretty s <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+      )
 -- case scrutinee of [whnf] {
 --   alternative1 -> body1
 --   alternative2 -> body2
 -- }
-exprCaseDoc addParensIfSpaces scrutinee whnf alternatives =
-  parenify addParensIfSpaces $
-    ( case whnf of
-        Nothing ->
-          group
-            ( flatAlt
-                (annotate (AnnColor Red) "‼" <> exprDoc scrutinee <> hardline <> annotate AnnKeyword "switch")
-                (annotate AnnKeyword "switch" <> space <> nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-            )
-        Just s ->
-          group
-            ( flatAlt
-                ( pretty s
-                    <> " ← "
-                    <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee))
-                    <> hardline
-                    <> annotate AnnKeyword "switch"
-                )
-                (annotate AnnKeyword "switch" <> space <> pretty s <> " = " <> annotate (AnnColor Red) "‼" <> exprDoc scrutinee)
-            )
-    )
-      <> hardline
-      <> alternativesDoc alternatives
+exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
+  scrutineeDoc <- exprDoc scrutinee
+  altsDoc <- alternativesDoc alternatives
+  pure $
+    parenify addParensIfSpaces $
+      ( case whnf of
+          Nothing ->
+            group
+              ( flatAlt
+                  (annotate (AnnColor Red) "‼" <> scrutineeDoc <> hardline <> annotate AnnKeyword "switch")
+                  ( annotate AnnKeyword "switch"
+                      <> space
+                      <> nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc)
+                  )
+              )
+          Just s ->
+            group
+              ( flatAlt
+                  ( pretty s
+                      <> " ← "
+                      <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+                      <> hardline
+                      <> annotate AnnKeyword "switch"
+                  )
+                  ( annotate AnnKeyword "switch"
+                      <> space
+                      <> pretty s
+                      <> " = "
+                      <> annotate (AnnColor Red) "‼"
+                      <> scrutineeDoc
+                  )
+              )
+      )
+        <> hardline
+        <> altsDoc
 
-exprLetDoc :: Bool -> LetBinding -> Expr -> Doc Ann
-exprLetDoc addParensIfSpaces binding body =
-  parenify addParensIfSpaces $
-    -- group (letBindingDoc binding)
-    ( case binding of
-        LetBinding ident _ -> annotate AnnDefinition (pretty ident) <> " = ..."
-    )
-      <> hardline
-      <> exprDoc body
+exprLetDoc :: Bool -> LetBinding -> Expr -> M (Doc Ann)
+exprLetDoc addParensIfSpaces binding body = do
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      -- group (letBindingDoc binding)
+      ( case binding of
+          LetBinding ident _ -> annotate AnnDefinition (pretty ident) <> " = ..."
+      )
+        <> hardline
+        <> bodyDoc
 
-exprLetrecDoc :: Bool -> [LetBinding] -> Expr -> Doc Ann
-exprLetrecDoc addParensIfSpaces bindings body =
-  parenify addParensIfSpaces $
-    -- group (fold (punctuate hardline (map letBindingDoc bindings)))
-    ( bindings
-        & map (\(LetBinding ident _) -> annotate AnnDefinition (pretty ident) <> " = ...")
-        & punctuate hardline
-        & fold
-    )
-      <> hardline
-      <> exprDoc body
+exprLetrecDoc :: Bool -> [LetBinding] -> Expr -> M (Doc Ann)
+exprLetrecDoc addParensIfSpaces bindings body = do
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      -- group (fold (punctuate hardline (map letBindingDoc bindings)))
+      ( bindings
+          & map (\(LetBinding ident _) -> annotate AnnDefinition (pretty ident) <> " = ...")
+          & punctuate hardline
+          & fold
+      )
+        <> hardline
+        <> bodyDoc
 
-exprJoinDoc :: Bool -> JoinPoint -> Expr -> Doc Ann
-exprJoinDoc addParensIfSpaces point body =
-  parenify addParensIfSpaces $
-    -- group (joinPointDoc point)
-    ( case point of
-        JoinPoint ident _ _ -> annotate AnnDefinition (pretty ident) <> " = ..."
-    )
-      <> hardline
-      <> exprDoc body
+exprJoinDoc :: Bool -> JoinPoint -> Expr -> M (Doc Ann)
+exprJoinDoc addParensIfSpaces point body = do
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      -- group (joinPointDoc point)
+      ( case point of
+          JoinPoint ident _ _ -> annotate AnnDefinition (pretty ident) <> " = ..."
+      )
+        <> hardline
+        <> bodyDoc
 
-exprJoinrecDoc :: Bool -> [JoinPoint] -> Expr -> Doc Ann
-exprJoinrecDoc addParensIfSpaces points body =
-  parenify addParensIfSpaces $
-    -- group (fold (punctuate hardline (map joinPointDoc points)))
-    ( points
-        & map (\(JoinPoint ident _ _) -> annotate AnnDefinition (pretty ident) <> " = ...")
-        & punctuate hardline
-        & fold
-    )
-      <> hardline
-      <> exprDoc body
+exprJoinrecDoc :: Bool -> [JoinPoint] -> Expr -> M (Doc Ann)
+exprJoinrecDoc addParensIfSpaces points body = do
+  bodyDoc <- exprDoc body
+  pure $
+    parenify addParensIfSpaces $
+      -- group (fold (punctuate hardline (map joinPointDoc points)))
+      ( points
+          & map (\(JoinPoint ident _ _) -> annotate AnnDefinition (pretty ident) <> " = ...")
+          & punctuate hardline
+          & fold
+      )
+        <> hardline
+        <> bodyDoc
 
 -- if this is a list, slurp it into its non-empty exprs
 --
@@ -267,24 +309,27 @@ alternativeDoc addParensIfSpaces = \case
   ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "𝘵#") vars)
   AUnit -> annotate AnnPattern "𝘵"
 
-alternativesDoc :: [(Alternative, Expr)] -> Doc Ann
+alternativesDoc :: [(Alternative, Expr)] -> M (Doc Ann)
 alternativesDoc =
   go . moveDefaultToBottom
   where
-    go :: [(Alternative, Expr)] -> Doc Ann
-    go =
-      fold . punctuate hardline . map f
+    go :: [(Alternative, Expr)] -> M (Doc Ann)
+    go alts = do
+      altsDocs <- traverse f alts
+      pure (fold (punctuate hardline altsDocs))
 
-    f :: (Alternative, Expr) -> Doc Ann
-    f (alternative, body) =
-      group $
-        nest 2 $
-          annotate AnnKeyword "case"
-            <> space
-            <> alternativeDoc False alternative
-            <> " →"
-            <> line
-            <> exprDoc body
+    f :: (Alternative, Expr) -> M (Doc Ann)
+    f (alternative, body) = do
+      bodyDoc <- exprDoc body
+      pure $
+        group $
+          nest 2 $
+            annotate AnnKeyword "case"
+              <> space
+              <> alternativeDoc False alternative
+              <> " →"
+              <> line
+              <> bodyDoc
 
     moveDefaultToBottom :: [(Alternative, Expr)] -> [(Alternative, Expr)]
     moveDefaultToBottom = \case
@@ -295,11 +340,11 @@ identDoc :: Ident -> Doc Ann
 identDoc Ident {name} =
   pretty name
 
-letBindingDoc :: LetBinding -> Doc Ann
+letBindingDoc :: LetBinding -> M (Doc Ann)
 letBindingDoc (LetBinding name defn) =
   defnDoc name defn
 
-joinPointDoc :: JoinPoint -> Doc Ann
+joinPointDoc :: JoinPoint -> M (Doc Ann)
 joinPointDoc (JoinPoint name bindings defn) =
   defnDoc (name <> "✓") (ELam bindings defn)
 
