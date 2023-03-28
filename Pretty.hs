@@ -1,6 +1,6 @@
 module Pretty where
 
-import qualified Control.Monad.Trans.State.Strict as State
+import qualified Control.Monad.Trans.Reader as Reader
 import qualified Control.Monad.Trans.Writer.CPS as Writer
 import Data.Char (isUpper)
 import Data.Foldable (fold)
@@ -29,8 +29,8 @@ prettyExpr ident expr =
     doc :: Doc Ann
     doc =
       defnDoc ident expr
-        & Writer.runWriterT
-        & (`State.evalState` [])
+        & (`Reader.runReaderT` [])
+        & Writer.runWriter
         & (\(doc0, _localDefns) -> doc0)
 
 data Ann
@@ -71,7 +71,7 @@ bindingsDoc =
       bindings -> hsep bindings <> space
 
 type M a =
-  Writer.WriterT (Endo [LocalDefn]) (State.State [Text]) a
+  Reader.ReaderT [Text] (Writer.Writer (Endo [LocalDefn])) a
 
 data LocalDefn
   = Let [Text] Expr
