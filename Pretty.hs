@@ -59,7 +59,7 @@ defnDoc ident = \case
   where
     go :: [Var] -> Expr -> M (Doc Ann)
     go bindings body = do
-      bodyDoc <- exprDoc body
+      bodyDoc <- Reader.local (ident :) (exprDoc body)
       pure (group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> bodyDoc)))
 
 bindingsDoc :: [Var] -> Doc Ann
