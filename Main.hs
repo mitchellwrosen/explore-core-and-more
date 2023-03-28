@@ -17,6 +17,7 @@ import Data.Void (Void)
 import Debug.Trace
 import Expr
 import Pretty (prettyExpr)
+import System.Environment (getArgs)
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer (decimal)
@@ -25,7 +26,12 @@ import Type
 
 main :: IO ()
 main = do
-  contents <- Text.decodeUtf8 <$> ByteString.readFile ".simpl/Demeter.dump-simpl"
+  contents <- do
+    file <-
+      getArgs <&> \case
+        [file] -> file
+        _ -> ".simpl/Demeter.dump-simpl"
+    Text.decodeUtf8 <$> ByteString.readFile file
   case runParser parser "" contents of
     Left err -> putStrLn (errorBundlePretty err)
     Right (result, rest) -> do
