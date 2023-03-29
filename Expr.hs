@@ -36,7 +36,6 @@ isEVar = \case
   EId (Ident Nothing [] var) -> Just var
   _ -> Nothing
 
--- TODO use this in EId
 data Ident = Ident
   { package :: Maybe Text,
     modules :: [Text],
@@ -114,6 +113,7 @@ optimizeExpression =
   exprFToExpr
     . unannotate
     . renameVars
+    -- . numberIdents
     . replaceUnusedVarsWithUnderscores
     . annotateUsedIdentifiers
     . exprToExprF
@@ -151,6 +151,10 @@ bottomUp f =
 bottomUp1 :: (Functor f) => (f (Fix f) -> f (Fix f)) -> Fix f -> Fix f
 bottomUp1 f =
   Fix . f . fmap (bottomUp1 f) . unfix
+
+topDown :: Functor g => (forall x. f x -> g x) -> Fix f -> Fix g
+topDown f =
+  Fix . fmap (topDown f) . f . unfix
 
 exprToExprF :: Expr -> Fix ExprF
 exprToExprF = \case
@@ -349,13 +353,29 @@ replaceUnusedVarsWithUnderscores =
           else Var "_" ty
       var@Tyvar {} -> var
 
+data N a
+  = N a Int
+
+instance Eq a => Eq (N a) where
+  N x _ == N y _ = x == y
+
+instance Ord a => Ord (N a) where
+  compare (N x _) (N y _) = compare x y
+
+-- Give each ident an "occurrence number" of 0. This lets us reuse variables names (with a higher occurrence number)
+-- after they fall out of use.
+numberIdents :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set (N Ident)))
+numberIdents =
+  topDown (\(X expr idents) -> X expr (Set.map (\ident -> N ident 0) idents))
+
 renameVars :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
 renameVars expr =
-  State.evalState (renameVars1 expr) supply
+  State.evalState (renameVars1 expr) supply2
   where
     alphabet :: [Text]
     alphabet = map Text.singleton ['a' .. 'z']
 
+    -- a, b, ..., z, aa, ab, ..., az, ba, bb, ... bz, ...
     supply :: [Text]
     supply =
       alphabet ++ do
@@ -363,8 +383,18 @@ renameVars expr =
         prefix <- alphabet
         pure (prefix <> suffix)
 
+    -- a0  b0       z0  aa0  ab0       az0  ba0  bb0       bz0
+    -- a1  b1       z1  aa1  ab1       az1  ba1  bb1       bz1
+    -- a2, b2, ..., z2, aa2, ab2, ..., az2, ba2, bb2, ..., bz2, ...
+    -- .   .         .    .    .         .    .    .         .
+    -- .   .         .    .    .         .    .    .         .
+    -- .   .         .    .    .         .    .    .         .
+    supply2 :: [[N Text]]
+    supply2 =
+      map (\var -> map (N var) [0..]) supply
+
 type NameSupply =
-  [Text]
+  [[N Text]]
 
 renameVars1 :: Fix (X ExprF (Set Ident)) -> State.State NameSupply (Fix (X ExprF (Set Ident)))
 renameVars1 expr0@(Fix (X expr1 freeIdents)) =
@@ -445,13 +475,6 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     ELitF {} -> pure expr0
     ETyF {} -> pure expr0
   where
-    -- FIXME hmm don't want to use something from the supply that's bound!
-    fresh :: State.State NameSupply Text
-    fresh = do
-      supply <- State.get
-      State.put (tail supply)
-      pure (head supply)
-
     renameLetBinding ::
       LetBindingF (Fix (X ExprF (Set Ident))) ->
       State.State NameSupply (LetBindingF (Fix (X ExprF (Set Ident))))
@@ -467,6 +490,15 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
       defn2 <- renameVars1 defn1
       pure (JoinPointF ident vars1 defn2)
 
+    -- `renameVarIn var body` tries to rename `var` (assumed to have a bad name) in `body` to the best name we can come
+    -- up with. We know `var` is used in `body` if `var` is not "_", since we replace unused vars with "_" before we get
+    -- here.
+    --
+    -- For example, `var` might be x_au9, and our supply might have [[a1, ...], [b1, ...], [c0, ...]] (i.e. we've
+    -- already taken two good names a0 and b1.
+    --
+    -- We'd like to use the best "a" name (a1), unless an "a" name (which would be the previous one, a0) is still used
+    -- within `body`, in which case we'll move on to trying the best "b" name, and so on.
     renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
     renameVarIn var0 body =
       case var0 of
@@ -483,6 +515,15 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
               (v1, body1) <- renameVarIn v0 body
               loop (v1 : vars) body1 vs
        in loop [] body0 vars0
+
+-- FIXME hmm don't want to use something from the supply that's bound!
+fresh :: State.State NameSupply Text
+fresh = do
+  supply <- State.get
+  State.put (tail supply)
+  let N name _ = head (head supply)
+  pure name
+
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
 alphaRename :: Text -> Text -> Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))

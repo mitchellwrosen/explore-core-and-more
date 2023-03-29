@@ -26,7 +26,10 @@ import Text.Megaparsec.Debug
 import Type
 
 main :: IO ()
-main = do
+main = pure () -- theMain
+
+theMain :: IO ()
+theMain = do
   getArgs >>= \case
     "ghc" : ghcArgs -> do
       let ghcOptions =
