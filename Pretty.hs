@@ -1,14 +1,14 @@
 module Pretty where
 
-import qualified Control.Monad.Trans.Reader as Reader
-import qualified Control.Monad.Trans.Writer.CPS as Writer
+import Control.Monad.Reader qualified as Reader
+import Control.Monad.Writer.CPS qualified as Writer
 import Data.Char (isUpper)
 import Data.Foldable (fold)
 import Data.Function ((&))
 import Data.Maybe (mapMaybe)
-import Data.Monoid (Endo)
+import Data.Monoid (Endo (..))
 import Data.Text (Text)
-import qualified Data.Text as Text
+import Data.Text qualified as Text
 import Expr
 import Prettyprinter
 import Prettyprinter.Render.Terminal
@@ -223,16 +223,17 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
         <> altsDoc
 
 exprLetDoc :: Bool -> LetBinding Text -> Expr Text -> M (Doc Ann)
-exprLetDoc addParensIfSpaces binding body = do
-  bodyDoc <- exprDoc body
-  pure $
-    parenify addParensIfSpaces $
-      -- group (letBindingDoc binding)
-      ( case binding of
-          LetBinding ident _ -> annotate AnnDefinition (pretty ident) <> " = ..."
-      )
-        <> hardline
-        <> bodyDoc
+exprLetDoc addParensIfSpaces binding@(LetBinding ident defn) body =
+  if liftLocalDefinitions
+    then do
+      context <- Reader.ask
+      Writer.tell (Endo (Let context defn :))
+      bodyDoc <- exprDoc body
+      pure (parenify addParensIfSpaces ((annotate AnnDefinition (pretty ident) <> " = ...") <> hardline <> bodyDoc))
+    else do
+      letDoc <- letBindingDoc binding
+      bodyDoc <- exprDoc body
+      pure (parenify addParensIfSpaces (group letDoc <> hardline <> bodyDoc))
 
 exprLetrecDoc :: Bool -> [LetBinding Text] -> Expr Text -> M (Doc Ann)
 exprLetrecDoc addParensIfSpaces bindings body = do

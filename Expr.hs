@@ -1,7 +1,7 @@
 module Expr where
 
 import Control.Lens (over, view)
-import Control.Monad.Trans.State qualified as State
+import Control.Monad.State.Strict qualified as State
 import Data.Function ((&))
 import Data.Generics.Product (position)
 import Data.Maybe (fromMaybe, mapMaybe)
