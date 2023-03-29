@@ -521,7 +521,7 @@ tidentP = do
   space
   pure ident
 
-varP :: P Var
+varP :: P (Var Text)
 varP = do
   (satisfy \c -> isAlpha c || c == '_' || c == '$' || c == '@') >>= \case
     '@' -> do
@@ -554,7 +554,7 @@ varP = do
       string_ "::"
       typeP
 
-bindingP :: P Var
+bindingP :: P (Var Text)
 bindingP = do
   asum
     [ do
@@ -599,7 +599,7 @@ litP =
           Just () -> pure (LWord64U n)
     ]
 
-alternativeP :: P (Alternative, Expr)
+alternativeP :: P (Alternative Text, Expr)
 alternativeP = do
   alt <-
     asum

@@ -57,12 +57,12 @@ defnDoc ident = \case
   ELam bindings body -> go bindings body
   expr -> go [] expr
   where
-    go :: [Var] -> Expr -> M (Doc Ann)
+    go :: [Var Text] -> Expr -> M (Doc Ann)
     go bindings body = do
       bodyDoc <- Reader.local (ident :) (exprDoc body)
       pure (group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> bodyDoc)))
 
-bindingsDoc :: [Var] -> Doc Ann
+bindingsDoc :: [Var Text] -> Doc Ann
 bindingsDoc =
   (<> "=") . f . map varDoc . mungeVars
   where
@@ -140,7 +140,7 @@ exprAppDoc addParensIfSpaces x ys = do
 -- case <scrutinee> of {
 --   <alternative> -> <body>
 -- }
-exprCaseDoc :: Bool -> Expr -> Maybe Text -> [(Alternative, Expr)] -> M (Doc Ann)
+exprCaseDoc :: Bool -> Expr -> Maybe Text -> [(Alternative Text, Expr)] -> M (Doc Ann)
 exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
   scrutineeDoc <- exprDoc scrutinee
   bodyDoc <- exprDoc body
@@ -292,7 +292,7 @@ slurpListExpr = \case
       EApp (EVar ":") (ETy _) [lhs, rhs] -> lhs : slurp rhs
       expr -> [expr]
 
-alternativeDoc :: Bool -> Alternative -> Doc Ann
+alternativeDoc :: Bool -> Alternative Text -> Doc Ann
 alternativeDoc addParensIfSpaces = \case
   ACon con0 vars ->
     parenify addParensIfSpaces $
@@ -309,16 +309,16 @@ alternativeDoc addParensIfSpaces = \case
   ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "𝘵#") vars)
   AUnit -> annotate AnnPattern "𝘵"
 
-alternativesDoc :: [(Alternative, Expr)] -> M (Doc Ann)
+alternativesDoc :: [(Alternative Text, Expr)] -> M (Doc Ann)
 alternativesDoc =
   go . moveDefaultToBottom
   where
-    go :: [(Alternative, Expr)] -> M (Doc Ann)
+    go :: [(Alternative Text, Expr)] -> M (Doc Ann)
     go alts = do
       altsDocs <- traverse f alts
       pure (fold (punctuate hardline altsDocs))
 
-    f :: (Alternative, Expr) -> M (Doc Ann)
+    f :: (Alternative Text, Expr) -> M (Doc Ann)
     f (alternative, body) = do
       bodyDoc <- exprDoc body
       pure $
@@ -331,7 +331,7 @@ alternativesDoc =
               <> line
               <> bodyDoc
 
-    moveDefaultToBottom :: [(Alternative, Expr)] -> [(Alternative, Expr)]
+    moveDefaultToBottom :: [(Alternative var, Expr)] -> [(Alternative var, Expr)]
     moveDefaultToBottom = \case
       x@(ADef {}, _) : xs -> xs ++ [x]
       xs -> xs
@@ -371,7 +371,7 @@ typeDoc_ addParensIfSpaces = \case
   TId ident -> pretty ident
   TTuple _ _ _ -> error "TTuple"
 
-varDoc :: Var -> Doc Ann
+varDoc :: Var Text -> Doc Ann
 varDoc = \case
   Tyvar var _kind -> annotate AnnType ("@" <> pretty var)
   Var var _type -> pretty var
@@ -390,7 +390,7 @@ parenify addParensIfSpaces inner =
     then group (flatAlt ("( " <> align inner <> line <> ")") (parens inner))
     else group inner
 
-mungeVars :: [Var] -> [Var]
+mungeVars :: [Var Text] -> [Var Text]
 mungeVars =
   if omitTypes
     then mapMaybe \case

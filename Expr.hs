@@ -11,12 +11,12 @@ import Type
 
 data Expr
   = EApp Expr Expr [Expr]
-  | ECase Expr (Maybe Text) [(Alternative, Expr)]
+  | ECase Expr (Maybe Text) [(Alternative Text, Expr)]
   | EId Ident
   | EJoin JoinPoint Expr
   | EJoinrec [JoinPoint] Expr
   | EJump
-  | ELam [Var] Expr
+  | ELam [Var Text] Expr
   | ELet LetBinding Expr
   | ELetrec [LetBinding] Expr
   | ELit Lit
@@ -56,7 +56,7 @@ data LetBinding
   deriving stock (Eq, Show)
 
 data JoinPoint
-  = JoinPoint Text [Var] Expr
+  = JoinPoint Text [Var Text] Expr
   deriving stock (Eq, Show)
 
 data Lit
@@ -67,37 +67,38 @@ data Lit
   | LWord64U Text -- 0##64
   deriving stock (Eq, Show)
 
-data Var
-  = Tyvar Text (Maybe Type) -- '@foo'
-  | Var Text (Maybe Type) -- 'foo'
+-- TODO rename to Binder
+data Var var
+  = Tyvar var (Maybe Type) -- '@foo'
+  | Var var (Maybe Type) -- 'foo'
   deriving stock (Show)
 
-instance Eq Var where
+instance Eq var => Eq (Var var) where
   Tyvar x _ == Tyvar y _ = x == y
   Var x _ == Var y _ = x == y
   _ == _ = False
 
-instance Ord Var where
+instance Ord var => Ord (Var var) where
   compare (Tyvar x _) (Tyvar y _) = compare x y
   compare (Tyvar _ _) (Var _ _) = LT
   compare (Var x _) (Var y _) = compare x y
   compare (Var _ _) (Tyvar _ _) = GT
 
-varToTermIdent :: Var -> Maybe Ident
+varToTermIdent :: Var Text -> Maybe Ident
 varToTermIdent = \case
   Var var _ -> Just (varIdent var)
   Tyvar {} -> Nothing
 
-data Alternative
-  = ACon Ident [Var]
+data Alternative var
+  = ACon Ident [Var var]
   | ADef
   | ALit Lit
-  | ATuple Var Var [Var]
-  | ATupleU [Var]
+  | ATuple (Var var) (Var var) [Var var]
+  | ATupleU [Var var]
   | AUnit
   deriving stock (Eq, Show)
 
-alternativeBoundVars :: Alternative -> [Var]
+alternativeBoundVars :: Alternative var -> [Var var]
 alternativeBoundVars = \case
   ACon _ vars -> vars
   ADef -> []
@@ -120,12 +121,12 @@ optimizeExpression =
 
 data ExprF a
   = EAppF a a [a]
-  | ECaseF a (Maybe Text) [(Alternative, a)]
+  | ECaseF a (Maybe Text) [(Alternative Text, a)]
   | EIdF Ident
   | EJoinF (JoinPointF a) a
   | EJoinrecF [JoinPointF a] a
   | EJumpF
-  | ELamF [Var] a
+  | ELamF [Var Text] a
   | ELetF (LetBindingF a) a
   | ELetrecF [LetBindingF a] a
   | ELitF Lit
@@ -139,7 +140,7 @@ data LetBindingF a
   deriving stock (Functor, Show)
 
 data JoinPointF a
-  = JoinPointF Text [Var] a
+  = JoinPointF Text [Var Text] a
   deriving stock (Functor, Show)
 
 newtype Fix f = Fix {unfix :: f (Fix f)}
@@ -319,7 +320,7 @@ replaceUnusedVarsWithUnderscores =
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
-          f :: (Alternative, Fix (X ExprF (Set Ident))) -> (Alternative, Fix (X ExprF (Set Ident)))
+          f :: (Alternative Text, Fix (X ExprF (Set Ident))) -> (Alternative Text, Fix (X ExprF (Set Ident)))
           f = \case
             (ACon con vars, body@(Fix (X _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
@@ -345,7 +346,7 @@ replaceUnusedVarsWithUnderscores =
     expr@(X ETupleUF {} _) -> expr
     expr@(X ETyF {} _) -> expr
   where
-    underscore :: Set Ident -> Var -> Var
+    underscore :: Set Ident -> Var Text -> Var Text
     underscore freeIdents = \case
       var@(Var v ty) ->
         if Set.member (varIdent v) freeIdents
@@ -391,7 +392,7 @@ renameVars expr =
     -- .   .         .    .    .         .    .    .         .
     supply2 :: [[N Text]]
     supply2 =
-      map (\var -> map (N var) [0..]) supply
+      map (\var -> map (N var) [0 ..]) supply
 
 type NameSupply =
   [[N Text]]
@@ -499,7 +500,7 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     --
     -- We'd like to use the best "a" name (a1), unless an "a" name (which would be the previous one, a0) is still used
     -- within `body`, in which case we'll move on to trying the best "b" name, and so on.
-    renameVarIn :: Var -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var, Fix (X ExprF (Set Ident)))
+    renameVarIn :: Var Text -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var Text, Fix (X ExprF (Set Ident)))
     renameVarIn var0 body =
       case var0 of
         Var old ty | old /= "_" -> do
@@ -507,7 +508,10 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
           pure (Var new ty, alphaRename old new body)
         _ -> pure (var0, body)
 
-    renameVarsIn :: [Var] -> Fix (X ExprF (Set Ident)) -> State.State NameSupply ([Var], Fix (X ExprF (Set Ident)))
+    renameVarsIn ::
+      [Var Text] ->
+      Fix (X ExprF (Set Ident)) ->
+      State.State NameSupply ([Var Text], Fix (X ExprF (Set Ident)))
     renameVarsIn vars0 body0 =
       let loop vars body = \case
             [] -> pure (reverse vars, body)
@@ -523,7 +527,6 @@ fresh = do
   State.put (tail supply)
   let N name _ = head (head supply)
   pure name
-
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
 alphaRename :: Text -> Text -> Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
