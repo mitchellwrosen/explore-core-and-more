@@ -145,7 +145,7 @@ exprDoc_ addParensIfSpaces = \case
     if expr == eNil
       then exprDoc_ addParensIfSpaces eNil
       else exprDoc_ addParensIfSpaces (EApp eCons expr exprs)
-  EApp EJump (EVar ident) zs -> exprAppDoc addParensIfSpaces (EVar (ident <> "✓")) zs
+  EApp EJump (EVar ident) zs -> exprAppDoc1 addParensIfSpaces (annotate AnnKeyword "jump") (EVar (ident <> "✓") : zs)
   EApp x y zs -> exprAppDoc addParensIfSpaces x (y : zs)
   ELam bindings body -> do
     bodyDoc <- exprDoc body
@@ -165,9 +165,14 @@ exprDoc_ addParensIfSpaces = \case
 
 exprAppDoc :: Bool -> Expr Text -> [Expr Text] -> M (Doc Ann)
 exprAppDoc addParensIfSpaces x ys = do
+  doc <- exprDoc_ True x
+  exprAppDoc1 addParensIfSpaces doc ys
+
+exprAppDoc1 :: Bool -> Doc Ann -> [Expr Text] -> M (Doc Ann)
+exprAppDoc1 addParensIfSpaces doc ys = do
   let args = mapMaybe p ys
-  docs <- traverse (exprDoc_ True) (x : args)
-  pure (parenify (addParensIfSpaces && not (null args)) (group (nest 2 (vsep docs))))
+  docs <- traverse (exprDoc_ True) args
+  pure (parenify (addParensIfSpaces && not (null args)) (group (nest 2 (vsep (doc : docs)))))
   where
     p :: Expr Text -> Maybe (Expr Text)
     p expr =

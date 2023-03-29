@@ -43,3 +43,5 @@ determine if singleton unboxed tuple exists, and if not, split TupleU intwo two 
 Letrec and Joinrec LocalDef constructors
 
 Join letrec+let, joinrec+join? is a 1-elem rec thing important to know it's recursive?
+
+print binders above local defs
