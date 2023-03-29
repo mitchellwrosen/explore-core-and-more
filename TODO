@@ -39,3 +39,5 @@ run on all of containers, text, bytestring, unordered-containers, parsec
 collect golden tests
 
 determine if singleton unboxed tuple exists, and if not, split TupleU intwo two (UnitU and 2+ TupleU)
+
+get rid of X and just put the annotation in ExprF

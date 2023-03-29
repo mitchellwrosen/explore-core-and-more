@@ -20,7 +20,7 @@ omitTypes = True
 liftLocalDefinitions :: Bool
 liftLocalDefinitions = True
 
-prettyExpr :: Text -> Expr -> Text
+prettyExpr :: Text -> Expr Text -> Text
 prettyExpr ident expr =
   renderStrict (layoutPretty opts (styleAnn <$> doc))
   where
@@ -52,12 +52,12 @@ styleAnn = \case
   AnnLiteral -> color Magenta
   AnnType -> color Blue
 
-defnDoc :: Text -> Expr -> M (Doc Ann)
+defnDoc :: Text -> Expr Text -> M (Doc Ann)
 defnDoc ident = \case
   ELam bindings body -> go bindings body
   expr -> go [] expr
   where
-    go :: [Var Text] -> Expr -> M (Doc Ann)
+    go :: [Var Text] -> Expr Text -> M (Doc Ann)
     go bindings body = do
       bodyDoc <- Reader.local (ident :) (exprDoc body)
       pure (group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> bodyDoc)))
@@ -74,13 +74,13 @@ type M a =
   Reader.ReaderT [Text] (Writer.Writer (Endo [LocalDefn])) a
 
 data LocalDefn
-  = Let [Text] Expr
+  = Let [Text] (Expr Text)
 
-exprDoc :: Expr -> M (Doc Ann)
+exprDoc :: Expr Text -> M (Doc Ann)
 exprDoc =
   exprDoc_ False
 
-exprDoc_ :: Bool -> Expr -> M (Doc Ann)
+exprDoc_ :: Bool -> Expr Text -> M (Doc Ann)
 exprDoc_ addParensIfSpaces = \case
   EId ident0@Ident {name = name0} ->
     pure do
@@ -123,13 +123,13 @@ exprDoc_ addParensIfSpaces = \case
   ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar "𝘵#") expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
-exprAppDoc :: Bool -> Expr -> [Expr] -> M (Doc Ann)
+exprAppDoc :: Bool -> Expr Text -> [Expr Text] -> M (Doc Ann)
 exprAppDoc addParensIfSpaces x ys = do
   let args = mapMaybe p ys
   docs <- traverse (exprDoc_ True) (x : args)
   pure (parenify (addParensIfSpaces && not (null args)) (group (nest 2 (vsep docs))))
   where
-    p :: Expr -> Maybe Expr
+    p :: Expr Text -> Maybe (Expr Text)
     p expr =
       if omitTypes
         then case expr of
@@ -140,7 +140,7 @@ exprAppDoc addParensIfSpaces x ys = do
 -- case <scrutinee> of {
 --   <alternative> -> <body>
 -- }
-exprCaseDoc :: Bool -> Expr -> Maybe Text -> [(Alternative Text, Expr)] -> M (Doc Ann)
+exprCaseDoc :: Bool -> Expr Text -> Maybe Text -> [(Alternative Text, Expr Text)] -> M (Doc Ann)
 exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
   scrutineeDoc <- exprDoc scrutinee
   bodyDoc <- exprDoc body
@@ -222,7 +222,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
         <> hardline
         <> altsDoc
 
-exprLetDoc :: Bool -> LetBinding -> Expr -> M (Doc Ann)
+exprLetDoc :: Bool -> LetBinding Text -> Expr Text -> M (Doc Ann)
 exprLetDoc addParensIfSpaces binding body = do
   bodyDoc <- exprDoc body
   pure $
@@ -234,7 +234,7 @@ exprLetDoc addParensIfSpaces binding body = do
         <> hardline
         <> bodyDoc
 
-exprLetrecDoc :: Bool -> [LetBinding] -> Expr -> M (Doc Ann)
+exprLetrecDoc :: Bool -> [LetBinding Text] -> Expr Text -> M (Doc Ann)
 exprLetrecDoc addParensIfSpaces bindings body = do
   bodyDoc <- exprDoc body
   pure $
@@ -248,7 +248,7 @@ exprLetrecDoc addParensIfSpaces bindings body = do
         <> hardline
         <> bodyDoc
 
-exprJoinDoc :: Bool -> JoinPoint -> Expr -> M (Doc Ann)
+exprJoinDoc :: Bool -> JoinPoint Text -> Expr Text -> M (Doc Ann)
 exprJoinDoc addParensIfSpaces point body = do
   bodyDoc <- exprDoc body
   pure $
@@ -260,7 +260,7 @@ exprJoinDoc addParensIfSpaces point body = do
         <> hardline
         <> bodyDoc
 
-exprJoinrecDoc :: Bool -> [JoinPoint] -> Expr -> M (Doc Ann)
+exprJoinrecDoc :: Bool -> [JoinPoint Text] -> Expr Text -> M (Doc Ann)
 exprJoinrecDoc addParensIfSpaces points body = do
   bodyDoc <- exprDoc body
   pure $
@@ -280,13 +280,13 @@ exprJoinrecDoc addParensIfSpaces points body = do
 --   x : []     => Just (x, [nil])
 --   x : xs     => Just (x, [xs])
 --   x : y : ys => Just (x, y:ys)
-slurpListExpr :: Expr -> Maybe (Expr, [Expr])
+slurpListExpr :: Expr Text -> Maybe (Expr Text, [Expr Text])
 slurpListExpr = \case
   EApp (EVar "[]") (ETy _) [] -> Just (eNil, [])
   EApp (EVar ":") (ETy _) [lhs, rhs] -> Just (lhs, slurp rhs)
   _ -> Nothing
   where
-    slurp :: Expr -> [Expr]
+    slurp :: Expr Text -> [Expr Text]
     slurp = \case
       EApp (EVar "[]") (ETy _) [] -> [eNil]
       EApp (EVar ":") (ETy _) [lhs, rhs] -> lhs : slurp rhs
@@ -309,16 +309,16 @@ alternativeDoc addParensIfSpaces = \case
   ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent "𝘵#") vars)
   AUnit -> annotate AnnPattern "𝘵"
 
-alternativesDoc :: [(Alternative Text, Expr)] -> M (Doc Ann)
+alternativesDoc :: [(Alternative Text, Expr Text)] -> M (Doc Ann)
 alternativesDoc =
   go . moveDefaultToBottom
   where
-    go :: [(Alternative Text, Expr)] -> M (Doc Ann)
+    go :: [(Alternative Text, Expr Text)] -> M (Doc Ann)
     go alts = do
       altsDocs <- traverse f alts
       pure (fold (punctuate hardline altsDocs))
 
-    f :: (Alternative Text, Expr) -> M (Doc Ann)
+    f :: (Alternative Text, Expr Text) -> M (Doc Ann)
     f (alternative, body) = do
       bodyDoc <- exprDoc body
       pure $
@@ -331,7 +331,7 @@ alternativesDoc =
               <> line
               <> bodyDoc
 
-    moveDefaultToBottom :: [(Alternative var, Expr)] -> [(Alternative var, Expr)]
+    moveDefaultToBottom :: [(Alternative var, Expr Text)] -> [(Alternative var, Expr Text)]
     moveDefaultToBottom = \case
       x@(ADef {}, _) : xs -> xs ++ [x]
       xs -> xs
@@ -340,11 +340,11 @@ identDoc :: Ident Text -> Doc Ann
 identDoc Ident {name} =
   pretty name
 
-letBindingDoc :: LetBinding -> M (Doc Ann)
+letBindingDoc :: LetBinding Text -> M (Doc Ann)
 letBindingDoc (LetBinding name defn) =
   defnDoc name defn
 
-joinPointDoc :: JoinPoint -> M (Doc Ann)
+joinPointDoc :: JoinPoint Text -> M (Doc Ann)
 joinPointDoc (JoinPoint name bindings defn) =
   defnDoc (name <> "✓") (ELam bindings defn)
 
@@ -376,11 +376,11 @@ varDoc = \case
   Tyvar var _kind -> annotate AnnType ("@" <> pretty var)
   Var var _type -> pretty var
 
-eCons :: Expr
+eCons :: Expr Text
 eCons =
   EVar "𝘤𝘰𝘯𝘴"
 
-eNil :: Expr
+eNil :: Expr Text
 eNil =
   EVar "𝘯𝘪𝘭"
 

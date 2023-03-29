@@ -136,7 +136,7 @@ declarationP = do
 
 data Term = Term
   { identifier :: Text,
-    expr :: Expr
+    expr :: Expr Text
   }
   deriving stock (Show)
 
@@ -290,7 +290,7 @@ detailsP =
     [ DataConstructorWrapper <$ string_ "DataConWrapper"
     ]
 
-exprP :: P Expr
+exprP :: P (Expr Text)
 exprP = do
   expr0 <- exprP_
   case expr0 of
@@ -323,7 +323,7 @@ exprP = do
     ETupleU {} -> pure expr0
     ETy {} -> error "ETy"
 
-exprP_ :: P Expr
+exprP_ :: P (Expr Text)
 exprP_ = do
   asum
     [ do
@@ -410,7 +410,7 @@ exprP_ = do
           _ <- takeWhile1P Nothing isDigit
           string_ "> :: ..."
 
-letBindingP :: P LetBinding
+letBindingP :: P (LetBinding Text)
 letBindingP = do
   ident <- identifierP
   string_ "="
@@ -418,7 +418,7 @@ letBindingP = do
   _ <- optional (string_ ";")
   pure (LetBinding ident expr)
 
-joinPointP :: P JoinPoint
+joinPointP :: P (JoinPoint Text)
 joinPointP = do
   ident <- identifierP
   bindings <- many bindingP
@@ -599,7 +599,7 @@ litP =
           Just () -> pure (LWord64U n)
     ]
 
-alternativeP :: P (Alternative Text, Expr)
+alternativeP :: P (Alternative Text, Expr Text)
 alternativeP = do
   alt <-
     asum

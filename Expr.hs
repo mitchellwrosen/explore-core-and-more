@@ -9,29 +9,29 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Type
 
-data Expr
-  = EApp Expr Expr [Expr]
-  | ECase Expr (Maybe Text) [(Alternative Text, Expr)]
-  | EId (Ident Text)
-  | EJoin JoinPoint Expr
-  | EJoinrec [JoinPoint] Expr
+data Expr var
+  = EApp (Expr var) (Expr var) [Expr var]
+  | ECase (Expr var) (Maybe Text) [(Alternative var, Expr var)]
+  | EId (Ident var)
+  | EJoin (JoinPoint var) (Expr var)
+  | EJoinrec [JoinPoint var] (Expr var)
   | EJump
-  | ELam [Var Text] Expr
-  | ELet LetBinding Expr
-  | ELetrec [LetBinding] Expr
+  | ELam [Var var] (Expr var)
+  | ELet (LetBinding var) (Expr var)
+  | ELetrec [LetBinding var] (Expr var)
   | ELit Lit
-  | ETuple Expr Expr [Expr]
-  | ETupleU [Expr]
+  | ETuple (Expr var) (Expr var) [Expr var]
+  | ETupleU [Expr var]
   | ETy Type
   deriving stock (Eq, Show)
 
-pattern EVar :: Text -> Expr
+pattern EVar :: var -> Expr var
 pattern EVar var <-
   (isEVar -> Just var)
   where
     EVar var = EId (varIdent var)
 
-isEVar :: Expr -> Maybe Text
+isEVar :: Expr var -> Maybe var
 isEVar = \case
   EId (Ident Nothing [] var) -> Just var
   _ -> Nothing
@@ -51,12 +51,12 @@ identVar :: Ident Text -> Text
 identVar Ident {package, modules, name} =
   fromMaybe Text.empty package <> foldMap (\m -> m <> ".") modules <> name
 
-data LetBinding
-  = LetBinding Text Expr
+data LetBinding var
+  = LetBinding Text (Expr var)
   deriving stock (Eq, Show)
 
-data JoinPoint
-  = JoinPoint Text [Var Text] Expr
+data JoinPoint var
+  = JoinPoint Text [Var var] (Expr var)
   deriving stock (Eq, Show)
 
 data Lit
@@ -109,7 +109,7 @@ alternativeBoundVars = \case
 
 ------------------------------------------------------------------------------------------------------------------------
 
-optimizeExpression :: Expr -> Expr
+optimizeExpression :: Expr Text -> Expr Text
 optimizeExpression =
   exprFToExpr
     . unannotate
@@ -119,14 +119,14 @@ optimizeExpression =
     . annotateUsedIdentifiers
     . exprToExprF
 
-data ExprF a
+data ExprF var a
   = EAppF a a [a]
-  | ECaseF a (Maybe Text) [(Alternative Text, a)]
-  | EIdF (Ident Text)
-  | EJoinF (JoinPointF a) a
-  | EJoinrecF [JoinPointF a] a
+  | ECaseF a (Maybe Text) [(Alternative var, a)]
+  | EIdF (Ident var)
+  | EJoinF (JoinPointF var a) a
+  | EJoinrecF [JoinPointF var a] a
   | EJumpF
-  | ELamF [Var Text] a
+  | ELamF [Var var] a
   | ELetF (LetBindingF a) a
   | ELetrecF [LetBindingF a] a
   | ELitF Lit
@@ -139,8 +139,8 @@ data LetBindingF a
   = LetBindingF Text a
   deriving stock (Functor, Show)
 
-data JoinPointF a
-  = JoinPointF Text [Var Text] a
+data JoinPointF var a
+  = JoinPointF Text [Var var] a
   deriving stock (Functor, Show)
 
 newtype Fix f = Fix {unfix :: f (Fix f)}
@@ -157,7 +157,7 @@ topDown :: Functor g => (forall x. f x -> g x) -> Fix f -> Fix g
 topDown f =
   Fix . fmap (topDown f) . f . unfix
 
-exprToExprF :: Expr -> Fix ExprF
+exprToExprF :: Expr var -> Fix (ExprF var)
 exprToExprF = \case
   EApp x y zs -> Fix (EAppF (exprToExprF x) (exprToExprF y) (map exprToExprF zs))
   ECase scrutinee whnf alternatives ->
@@ -174,7 +174,7 @@ exprToExprF = \case
   ETupleU exprs -> Fix (ETupleUF (map exprToExprF exprs))
   ETy ty -> Fix (ETyF ty)
 
-exprFToExpr :: Fix ExprF -> Expr
+exprFToExpr :: Fix (ExprF var) -> Expr var
 exprFToExpr = \case
   Fix (EAppF x y zs) -> EApp (exprFToExpr x) (exprFToExpr y) (map exprFToExpr zs)
   Fix (ECaseF scrutinee whnf alternatives) ->
@@ -191,19 +191,19 @@ exprFToExpr = \case
   Fix (ETupleUF exprs) -> ETupleU (map exprFToExpr exprs)
   Fix (ETyF ty) -> ETy ty
 
-letBindingToLetBindingF :: LetBinding -> LetBindingF (Fix ExprF)
+letBindingToLetBindingF :: LetBinding var -> LetBindingF (Fix (ExprF var))
 letBindingToLetBindingF (LetBinding ident defn) =
   LetBindingF ident (exprToExprF defn)
 
-letBindingFToLetBinding :: LetBindingF (Fix ExprF) -> LetBinding
+letBindingFToLetBinding :: LetBindingF (Fix (ExprF var)) -> LetBinding var
 letBindingFToLetBinding (LetBindingF ident defn) =
   LetBinding ident (exprFToExpr defn)
 
-joinPointToJoinPointF :: JoinPoint -> JoinPointF (Fix ExprF)
+joinPointToJoinPointF :: JoinPoint var -> JoinPointF var (Fix (ExprF var))
 joinPointToJoinPointF (JoinPoint ident bindings defn) =
   JoinPointF ident bindings (exprToExprF defn)
 
-joinPointFToJoinPoint :: JoinPointF (Fix ExprF) -> JoinPoint
+joinPointFToJoinPoint :: JoinPointF var (Fix (ExprF var)) -> JoinPoint var
 joinPointFToJoinPoint (JoinPointF ident bindings defn) =
   JoinPoint ident bindings (exprFToExpr defn)
 
@@ -211,7 +211,7 @@ data X f x a
   = X (f a) x
   deriving stock (Functor)
 
-unannotate :: Fix (X ExprF a) -> Fix ExprF
+unannotate :: Fix (X (ExprF var) a) -> Fix (ExprF var)
 unannotate =
   bottomUp \(X expr _) -> expr
 
@@ -219,7 +219,7 @@ unannotate =
 -- Replace unused vars with underscores
 
 -- Annotate each expression with all of the term identifiers that are used within it
-annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set (Ident Text)))
+annotateUsedIdentifiers :: Fix (ExprF Text) -> Fix (X (ExprF Text) (Set (Ident Text)))
 annotateUsedIdentifiers expr =
   case unfix expr of
     EAppF x y zs ->
@@ -301,12 +301,12 @@ annotateUsedIdentifiers expr =
        in Fix (X (ETupleUF exprs1) (Set.unions vs))
     ETyF ty -> Fix (X (ETyF ty) Set.empty)
   where
-    recur :: Fix ExprF -> (Fix (X ExprF (Set (Ident Text))), Set (Ident Text))
+    recur :: Fix (ExprF Text) -> (Fix (X (ExprF Text) (Set (Ident Text))), Set (Ident Text))
     recur x =
       let y@(Fix (X _ v)) = annotateUsedIdentifiers x
        in (y, v)
 
-replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
+replaceUnusedVarsWithUnderscores :: Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
 replaceUnusedVarsWithUnderscores =
   bottomUp1 \case
     X (ECaseF scrutinee whnf alternatives) usedVars ->
@@ -320,7 +320,9 @@ replaceUnusedVarsWithUnderscores =
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
-          f :: (Alternative Text, Fix (X ExprF (Set (Ident Text)))) -> (Alternative Text, Fix (X ExprF (Set (Ident Text))))
+          f ::
+            (Alternative Text, Fix (X (ExprF var) (Set (Ident Text)))) ->
+            (Alternative Text, Fix (X (ExprF var) (Set (Ident Text))))
           f = \case
             (ACon con vars, body@(Fix (X _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
@@ -365,11 +367,11 @@ instance Ord a => Ord (N a) where
 
 -- Give each ident an "occurrence number" of 0. This lets us reuse variables names (with a higher occurrence number)
 -- after they fall out of use.
-numberIdents :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (N (Ident Text))))
+numberIdents :: Fix (X (ExprF var) (Set (Ident Text))) -> Fix (X (ExprF var) (Set (N (Ident Text))))
 numberIdents =
   topDown (\(X expr idents) -> X expr (Set.map (\ident -> N ident 0) idents))
 
-renameVars :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
+renameVars :: Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
 renameVars expr =
   State.evalState (renameVars1 expr) supply2
   where
@@ -397,7 +399,9 @@ renameVars expr =
 type NameSupply =
   [[N Text]]
 
-renameVars1 :: Fix (X ExprF (Set (Ident Text))) -> State.State NameSupply (Fix (X ExprF (Set (Ident Text))))
+renameVars1 ::
+  Fix (X (ExprF Text) (Set (Ident Text))) ->
+  State.State NameSupply (Fix (X (ExprF Text) (Set (Ident Text))))
 renameVars1 expr0@(Fix (X expr1 freeIdents)) =
   case expr1 of
     EAppF x0 y0 zs0 -> do
@@ -477,15 +481,15 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     ETyF {} -> pure expr0
   where
     renameLetBinding ::
-      LetBindingF (Fix (X ExprF (Set (Ident Text)))) ->
-      State.State NameSupply (LetBindingF (Fix (X ExprF (Set (Ident Text)))))
+      LetBindingF (Fix (X (ExprF Text) (Set (Ident Text)))) ->
+      State.State NameSupply (LetBindingF (Fix (X (ExprF Text) (Set (Ident Text)))))
     renameLetBinding (LetBindingF ident defn0) = do
       defn1 <- renameVars1 defn0
       pure (LetBindingF ident defn1)
 
     renameJoinPoint ::
-      JoinPointF (Fix (X ExprF (Set (Ident Text)))) ->
-      State.State NameSupply (JoinPointF (Fix (X ExprF (Set (Ident Text)))))
+      JoinPointF Text (Fix (X (ExprF Text) (Set (Ident Text)))) ->
+      State.State NameSupply (JoinPointF Text (Fix (X (ExprF Text) (Set (Ident Text)))))
     renameJoinPoint (JoinPointF ident vars0 defn0) = do
       (vars1, defn1) <- renameVarsIn vars0 defn0
       defn2 <- renameVars1 defn1
@@ -502,8 +506,8 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     -- within `body`, in which case we'll move on to trying the best "b" name, and so on.
     renameVarIn ::
       Var Text ->
-      Fix (X ExprF (Set (Ident Text))) ->
-      State.State NameSupply (Var Text, Fix (X ExprF (Set (Ident Text))))
+      Fix (X (ExprF Text) (Set (Ident Text))) ->
+      State.State NameSupply (Var Text, Fix (X (ExprF Text) (Set (Ident Text))))
     renameVarIn var0 body =
       case var0 of
         Var old ty | old /= "_" -> do
@@ -513,8 +517,8 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
 
     renameVarsIn ::
       [Var Text] ->
-      Fix (X ExprF (Set (Ident Text))) ->
-      State.State NameSupply ([Var Text], Fix (X ExprF (Set (Ident Text))))
+      Fix (X (ExprF Text) (Set (Ident Text))) ->
+      State.State NameSupply ([Var Text], Fix (X (ExprF Text) (Set (Ident Text))))
     renameVarsIn vars0 body0 =
       let loop vars body = \case
             [] -> pure (reverse vars, body)
@@ -533,7 +537,7 @@ fresh = do
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
 -- FIXME inline this
-alphaRename :: Text -> Text -> Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
+alphaRename :: Text -> Text -> Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
 alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
   if Set.member oldIdent freeIdents
     then
