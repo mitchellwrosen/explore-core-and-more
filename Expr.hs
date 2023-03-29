@@ -1,12 +1,15 @@
 module Expr where
 
-import qualified Control.Monad.Trans.State as State
+import Control.Lens (over, view)
+import Control.Monad.Trans.State qualified as State
 import Data.Function ((&))
+import Data.Generics.Product (position)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 import Data.Text (Text)
-import qualified Data.Text as Text
+import Data.Text qualified as Text
+import GHC.Generics
 import Type
 
 data Expr var
@@ -112,28 +115,27 @@ alternativeBoundVars = \case
 optimizeExpression :: Expr Text -> Expr Text
 optimizeExpression =
   exprFToExpr
-    . unannotate
     . renameVars
     -- . numberIdents
     . replaceUnusedVarsWithUnderscores
     . annotateUsedIdentifiers
-    . exprToExprF
+    . exprToExprF ()
 
-data ExprF var a
-  = EAppF a a [a]
-  | ECaseF a (Maybe Text) [(Alternative var, a)]
-  | EIdF (Ident var)
-  | EJoinF (JoinPointF var a) a
-  | EJoinrecF [JoinPointF var a] a
-  | EJumpF
-  | ELamF [Var var] a
-  | ELetF (LetBindingF a) a
-  | ELetrecF [LetBindingF a] a
-  | ELitF Lit
-  | ETupleF a a [a]
-  | ETupleUF [a]
-  | ETyF Type
-  deriving stock (Functor, Show)
+data ExprF x var a
+  = EAppF x a a [a]
+  | ECaseF x a (Maybe Text) [(Alternative var, a)]
+  | EIdF x (Ident var)
+  | EJoinF x (JoinPointF var a) a
+  | EJoinrecF x [JoinPointF var a] a
+  | EJumpF x
+  | ELamF x [Var var] a
+  | ELetF x (LetBindingF a) a
+  | ELetrecF x [LetBindingF a] a
+  | ELitF x Lit
+  | ETupleF x a a [a]
+  | ETupleUF x [a]
+  | ETyF x Type
+  deriving stock (Functor, Generic, Show)
 
 data LetBindingF a
   = LetBindingF Text a
@@ -142,6 +144,14 @@ data LetBindingF a
 data JoinPointF var a
   = JoinPointF Text [Var var] a
   deriving stock (Functor, Show)
+
+extra :: forall x var a. ExprF x var a -> x
+extra =
+  view (position @1)
+
+overExtra :: forall x x' var a. (x -> x') -> ExprF x var a -> ExprF x' var a
+overExtra =
+  over (position @1)
 
 newtype Fix f = Fix {unfix :: f (Fix f)}
 
@@ -157,196 +167,191 @@ topDown :: Functor g => (forall x. f x -> g x) -> Fix f -> Fix g
 topDown f =
   Fix . fmap (topDown f) . f . unfix
 
-exprToExprF :: Expr var -> Fix (ExprF var)
-exprToExprF = \case
-  EApp x y zs -> Fix (EAppF (exprToExprF x) (exprToExprF y) (map exprToExprF zs))
+-- caller signals to stop (Left) or continue descending into children (Right)
+topDownWithCutoff :: Functor f => (forall x. f x -> Either (f x) (f x)) -> Fix f -> Fix f
+topDownWithCutoff f =
+  Fix . either id (fmap (topDownWithCutoff f)) . f . unfix
+
+exprToExprF :: x -> Expr var -> Fix (ExprF x var)
+exprToExprF xxx = \case
+  EApp x y zs -> Fix (EAppF xxx (exprToExprF xxx x) (exprToExprF xxx y) (map (exprToExprF xxx) zs))
   ECase scrutinee whnf alternatives ->
-    Fix (ECaseF (exprToExprF scrutinee) whnf (map (\(alt, body) -> (alt, exprToExprF body)) alternatives))
-  EId ident -> Fix (EIdF ident)
-  EJoin point body -> Fix (EJoinF (joinPointToJoinPointF point) (exprToExprF body))
-  EJoinrec points body -> Fix (EJoinrecF (map joinPointToJoinPointF points) (exprToExprF body))
-  EJump -> Fix EJumpF
-  ELam bindings body -> Fix (ELamF bindings (exprToExprF body))
-  ELet binding body -> Fix (ELetF (letBindingToLetBindingF binding) (exprToExprF body))
-  ELetrec bindings body -> Fix (ELetrecF (map letBindingToLetBindingF bindings) (exprToExprF body))
-  ELit lit -> Fix (ELitF lit)
-  ETuple expr0 expr1 exprs -> Fix (ETupleF (exprToExprF expr0) (exprToExprF expr1) (map exprToExprF exprs))
-  ETupleU exprs -> Fix (ETupleUF (map exprToExprF exprs))
-  ETy ty -> Fix (ETyF ty)
+    Fix (ECaseF xxx (exprToExprF xxx scrutinee) whnf (map (\(alt, body) -> (alt, exprToExprF xxx body)) alternatives))
+  EId ident -> Fix (EIdF xxx ident)
+  EJoin point body -> Fix (EJoinF xxx (joinPointToJoinPointF xxx point) (exprToExprF xxx body))
+  EJoinrec points body -> Fix (EJoinrecF xxx (map (joinPointToJoinPointF xxx) points) (exprToExprF xxx body))
+  EJump -> Fix (EJumpF xxx)
+  ELam bindings body -> Fix (ELamF xxx bindings (exprToExprF xxx body))
+  ELet binding body -> Fix (ELetF xxx (letBindingToLetBindingF xxx binding) (exprToExprF xxx body))
+  ELetrec bindings body -> Fix (ELetrecF xxx (map (letBindingToLetBindingF xxx) bindings) (exprToExprF xxx body))
+  ELit lit -> Fix (ELitF xxx lit)
+  ETuple expr0 expr1 exprs ->
+    Fix (ETupleF xxx (exprToExprF xxx expr0) (exprToExprF xxx expr1) (map (exprToExprF xxx) exprs))
+  ETupleU exprs -> Fix (ETupleUF xxx (map (exprToExprF xxx) exprs))
+  ETy ty -> Fix (ETyF xxx ty)
 
-exprFToExpr :: Fix (ExprF var) -> Expr var
+exprFToExpr :: Fix (ExprF x var) -> Expr var
 exprFToExpr = \case
-  Fix (EAppF x y zs) -> EApp (exprFToExpr x) (exprFToExpr y) (map exprFToExpr zs)
-  Fix (ECaseF scrutinee whnf alternatives) ->
+  Fix (EAppF _ x y zs) -> EApp (exprFToExpr x) (exprFToExpr y) (map exprFToExpr zs)
+  Fix (ECaseF _ scrutinee whnf alternatives) ->
     ECase (exprFToExpr scrutinee) whnf (map (\(alt, body) -> (alt, exprFToExpr body)) alternatives)
-  Fix (EIdF ident) -> EId ident
-  Fix (EJoinF point body) -> EJoin (joinPointFToJoinPoint point) (exprFToExpr body)
-  Fix (EJoinrecF points body) -> EJoinrec (map joinPointFToJoinPoint points) (exprFToExpr body)
-  Fix EJumpF -> EJump
-  Fix (ELamF bindings body) -> ELam bindings (exprFToExpr body)
-  Fix (ELetF binding body) -> ELet (letBindingFToLetBinding binding) (exprFToExpr body)
-  Fix (ELetrecF bindings body) -> ELetrec (map letBindingFToLetBinding bindings) (exprFToExpr body)
-  Fix (ELitF lit) -> ELit lit
-  Fix (ETupleF x y zs) -> ETuple (exprFToExpr x) (exprFToExpr y) (map exprFToExpr zs)
-  Fix (ETupleUF exprs) -> ETupleU (map exprFToExpr exprs)
-  Fix (ETyF ty) -> ETy ty
+  Fix (EIdF _ ident) -> EId ident
+  Fix (EJoinF _ point body) -> EJoin (joinPointFToJoinPoint point) (exprFToExpr body)
+  Fix (EJoinrecF _ points body) -> EJoinrec (map joinPointFToJoinPoint points) (exprFToExpr body)
+  Fix (EJumpF _) -> EJump
+  Fix (ELamF _ bindings body) -> ELam bindings (exprFToExpr body)
+  Fix (ELetF _ binding body) -> ELet (letBindingFToLetBinding binding) (exprFToExpr body)
+  Fix (ELetrecF _ bindings body) -> ELetrec (map letBindingFToLetBinding bindings) (exprFToExpr body)
+  Fix (ELitF _ lit) -> ELit lit
+  Fix (ETupleF _ x y zs) -> ETuple (exprFToExpr x) (exprFToExpr y) (map exprFToExpr zs)
+  Fix (ETupleUF _ exprs) -> ETupleU (map exprFToExpr exprs)
+  Fix (ETyF _ ty) -> ETy ty
 
-letBindingToLetBindingF :: LetBinding var -> LetBindingF (Fix (ExprF var))
-letBindingToLetBindingF (LetBinding ident defn) =
-  LetBindingF ident (exprToExprF defn)
+letBindingToLetBindingF :: x -> LetBinding var -> LetBindingF (Fix (ExprF x var))
+letBindingToLetBindingF xxx (LetBinding ident defn) =
+  LetBindingF ident (exprToExprF xxx defn)
 
-letBindingFToLetBinding :: LetBindingF (Fix (ExprF var)) -> LetBinding var
+letBindingFToLetBinding :: LetBindingF (Fix (ExprF x var)) -> LetBinding var
 letBindingFToLetBinding (LetBindingF ident defn) =
   LetBinding ident (exprFToExpr defn)
 
-joinPointToJoinPointF :: JoinPoint var -> JoinPointF var (Fix (ExprF var))
-joinPointToJoinPointF (JoinPoint ident bindings defn) =
-  JoinPointF ident bindings (exprToExprF defn)
+joinPointToJoinPointF :: x -> JoinPoint var -> JoinPointF var (Fix (ExprF x var))
+joinPointToJoinPointF xxx (JoinPoint ident bindings defn) =
+  JoinPointF ident bindings (exprToExprF xxx defn)
 
-joinPointFToJoinPoint :: JoinPointF var (Fix (ExprF var)) -> JoinPoint var
+joinPointFToJoinPoint :: JoinPointF var (Fix (ExprF x var)) -> JoinPoint var
 joinPointFToJoinPoint (JoinPointF ident bindings defn) =
   JoinPoint ident bindings (exprFToExpr defn)
-
-data X f x a
-  = X (f a) x
-  deriving stock (Functor)
-
-unannotate :: Fix (X (ExprF var) a) -> Fix (ExprF var)
-unannotate =
-  bottomUp \(X expr _) -> expr
 
 ------------------------------------------------------------------------------------------------------------------------
 -- Replace unused vars with underscores
 
 -- Annotate each expression with all of the term identifiers that are used within it
-annotateUsedIdentifiers :: Fix (ExprF Text) -> Fix (X (ExprF Text) (Set (Ident Text)))
-annotateUsedIdentifiers expr =
-  case unfix expr of
-    EAppF x y zs ->
-      let (x1, v1) = recur x
-          (y2, v2) = recur y
-          (zs1, vs) = unzip (map recur zs)
-       in Fix (X (EAppF x1 y2 zs1) (Set.unions (v1 : v2 : vs)))
-    ECaseF scrutinee whnf alternatives ->
-      let (scrutinee1, v1) = recur scrutinee
-          (alternatives1, vs) =
-            unzip $
-              map
-                ( \(alt, body) ->
-                    let bound =
-                          maybe
-                            id
-                            (\v -> (varIdent v :))
-                            whnf
-                            (mapMaybe varToTermIdent (alternativeBoundVars alt))
-                     in let (body1, vs0) = recur body
-                         in ((alt, body1), Set.difference vs0 (Set.fromList bound))
-                )
-                alternatives
-       in Fix (X (ECaseF scrutinee1 whnf alternatives1) (Set.unions (v1 : vs)))
-    EIdF ident -> Fix (X (EIdF ident) (Set.singleton ident))
-    EJoinF (JoinPointF ident vars defn) body ->
-      let (defn1, v1) = recur defn
-          (body1, v2) = recur body
-       in Fix $
-            X
-              (EJoinF (JoinPointF ident vars defn1) body1)
-              ( Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))
-                  <> Set.delete (varIdent ident) v2
+annotateUsedIdentifiers :: Fix (ExprF () Text) -> Fix (ExprF (Set (Ident Text)) Text)
+annotateUsedIdentifiers = \case
+  Fix (EAppF () x y zs) ->
+    let (x1, v1) = recur x
+        (y2, v2) = recur y
+        (zs1, vs) = unzip (map recur zs)
+     in Fix (EAppF (Set.unions (v1 : v2 : vs)) x1 y2 zs1)
+  Fix (ECaseF () scrutinee whnf alternatives) ->
+    let (scrutinee1, v1) = recur scrutinee
+        (alternatives1, vs) =
+          unzip $
+            map
+              ( \(alt, body) ->
+                  let bound =
+                        maybe
+                          id
+                          (\v -> (varIdent v :))
+                          whnf
+                          (mapMaybe varToTermIdent (alternativeBoundVars alt))
+                   in let (body1, vs0) = recur body
+                       in ((alt, body1), Set.difference vs0 (Set.fromList bound))
               )
-    EJoinrecF points0 body0 -> do
-      let idents = Set.fromList (map (\(JoinPointF ident _ _) -> varIdent ident) points0)
-          (points1, pointsFreeIdents) =
-            points0
-              & map
-                ( \(JoinPointF ident vars defn0) ->
-                    let (defn1, defnFreeIdents) = recur defn0
-                     in ( JoinPointF ident vars defn1,
-                          Set.difference defnFreeIdents (Set.fromList (mapMaybe varToTermIdent vars) <> idents)
-                        )
-                )
-              & unzip
-      let (body1, bodyFreeIdents) = recur body0
-      Fix (X (EJoinrecF points1 body1) (Set.unions (Set.difference bodyFreeIdents idents : pointsFreeIdents)))
-    EJumpF -> Fix (X EJumpF Set.empty)
-    ELamF vars body ->
-      let (body1, v1) = recur body
-       in Fix (X (ELamF vars body1) (Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))))
-    ELetF (LetBindingF ident defn) body -> do
-      let (defn1, defnFreeIdents) = recur defn
-      let (body1, bodyFreeIdents) = recur body
-      let expr1 = ELetF (LetBindingF ident defn1) body1
-      let exprFreeIdents = defnFreeIdents <> Set.delete (varIdent ident) bodyFreeIdents
-      Fix (X expr1 exprFreeIdents)
-    ELetrecF bindings0 body0 -> do
-      let idents = Set.fromList (map (\(LetBindingF ident _) -> varIdent ident) bindings0)
-      let (bindings1, bindingsFreeIdents) =
-            bindings0
-              & map
-                ( \(LetBindingF ident defn0) ->
-                    let (defn1, defnFreeIdents) = recur defn0
-                     in (LetBindingF ident defn1, Set.difference defnFreeIdents idents)
-                )
-              & unzip
-      let (body1, bodyFreeIdents) = recur body0
-      Fix (X (ELetrecF bindings1 body1) (Set.unions (Set.difference bodyFreeIdents idents : bindingsFreeIdents)))
-    ELitF lit -> Fix (X (ELitF lit) Set.empty)
-    ETupleF x0 y0 zs0 -> do
-      let (x1, xFreeIdents) = recur x0
-      let (y1, yFreeIdents) = recur y0
-      let (zs1, zsFreeIdents) = unzip (map recur zs0)
-      Fix (X (ETupleF x1 y1 zs1) (Set.unions (xFreeIdents : yFreeIdents : zsFreeIdents)))
-    ETupleUF exprs ->
-      let (exprs1, vs) = unzip (map recur exprs)
-       in Fix (X (ETupleUF exprs1) (Set.unions vs))
-    ETyF ty -> Fix (X (ETyF ty) Set.empty)
+              alternatives
+     in Fix (ECaseF (Set.unions (v1 : vs)) scrutinee1 whnf alternatives1)
+  Fix (EIdF () ident) -> Fix (EIdF (Set.singleton ident) ident)
+  Fix (EJoinF () (JoinPointF ident vars defn) body) ->
+    let (defn1, v1) = recur defn
+        (body1, v2) = recur body
+     in Fix $
+          EJoinF
+            (Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars)) <> Set.delete (varIdent ident) v2)
+            (JoinPointF ident vars defn1)
+            body1
+  Fix (EJoinrecF () points0 body0) -> do
+    let idents = Set.fromList (map (\(JoinPointF ident _ _) -> varIdent ident) points0)
+        (points1, pointsFreeIdents) =
+          points0
+            & map
+              ( \(JoinPointF ident vars defn0) ->
+                  let (defn1, defnFreeIdents) = recur defn0
+                   in ( JoinPointF ident vars defn1,
+                        Set.difference defnFreeIdents (Set.fromList (mapMaybe varToTermIdent vars) <> idents)
+                      )
+              )
+            & unzip
+    let (body1, bodyFreeIdents) = recur body0
+    Fix (EJoinrecF (Set.unions (Set.difference bodyFreeIdents idents : pointsFreeIdents)) points1 body1)
+  Fix (EJumpF ()) -> Fix (EJumpF Set.empty)
+  Fix (ELamF () vars body) ->
+    let (body1, v1) = recur body
+     in Fix (ELamF (Set.difference v1 (Set.fromList (mapMaybe varToTermIdent vars))) vars body1)
+  Fix (ELetF () (LetBindingF ident defn) body) -> do
+    let (defn1, defnFreeIdents) = recur defn
+    let (body1, bodyFreeIdents) = recur body
+    let exprFreeIdents = defnFreeIdents <> Set.delete (varIdent ident) bodyFreeIdents
+    Fix (ELetF exprFreeIdents (LetBindingF ident defn1) body1)
+  Fix (ELetrecF () bindings0 body0) -> do
+    let idents = Set.fromList (map (\(LetBindingF ident _) -> varIdent ident) bindings0)
+    let (bindings1, bindingsFreeIdents) =
+          bindings0
+            & map
+              ( \(LetBindingF ident defn0) ->
+                  let (defn1, defnFreeIdents) = recur defn0
+                   in (LetBindingF ident defn1, Set.difference defnFreeIdents idents)
+              )
+            & unzip
+    let (body1, bodyFreeIdents) = recur body0
+    Fix (ELetrecF (Set.unions (Set.difference bodyFreeIdents idents : bindingsFreeIdents)) bindings1 body1)
+  Fix (ELitF () lit) -> Fix (ELitF Set.empty lit)
+  Fix (ETupleF () x0 y0 zs0) -> do
+    let (x1, xFreeIdents) = recur x0
+    let (y1, yFreeIdents) = recur y0
+    let (zs1, zsFreeIdents) = unzip (map recur zs0)
+    Fix (ETupleF (Set.unions (xFreeIdents : yFreeIdents : zsFreeIdents)) x1 y1 zs1)
+  Fix (ETupleUF () exprs) ->
+    let (exprs1, vs) = unzip (map recur exprs)
+     in Fix (ETupleUF (Set.unions vs) exprs1)
+  Fix (ETyF () ty) -> Fix (ETyF Set.empty ty)
   where
-    recur :: Fix (ExprF Text) -> (Fix (X (ExprF Text) (Set (Ident Text))), Set (Ident Text))
+    recur :: Fix (ExprF () Text) -> (Fix (ExprF (Set (Ident Text)) Text), Set (Ident Text))
     recur x =
-      let y@(Fix (X _ v)) = annotateUsedIdentifiers x
-       in (y, v)
+      let y = annotateUsedIdentifiers x
+       in (y, extra (unfix y))
 
-replaceUnusedVarsWithUnderscores :: Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
+replaceUnusedVarsWithUnderscores :: Fix (ExprF (Set (Ident Text)) Text) -> Fix (ExprF (Set (Ident Text)) Text)
 replaceUnusedVarsWithUnderscores =
   bottomUp1 \case
-    X (ECaseF scrutinee whnf alternatives) usedVars ->
+    ECaseF freeIdents scrutinee whnf alternatives ->
       let whnf1 :: Maybe Text
           whnf1 =
             case whnf of
               Nothing -> Nothing
               Just s ->
                 -- we know we won't shadow whnf with a pattern, so ignoring fst is ok
-                if any (\(_, Fix (X _ idents)) -> Set.member (varIdent s) idents) alternatives
+                if any (\(_, altFreeIdents) -> Set.member (varIdent s) (extra (unfix altFreeIdents))) alternatives
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
           f ::
-            (Alternative Text, Fix (X (ExprF var) (Set (Ident Text)))) ->
-            (Alternative Text, Fix (X (ExprF var) (Set (Ident Text))))
+            (Alternative Text, Fix (ExprF (Set (Ident Text)) Text)) ->
+            (Alternative Text, Fix (ExprF (Set (Ident Text)) Text))
           f = \case
-            (ACon con vars, body@(Fix (X _ bodyVars))) ->
-              (ACon con (map (underscore bodyVars) vars), body)
+            (ACon con vars, body) -> (ACon con (map (underscore (extra (unfix body))) vars), body)
             alt@(ADef, _) -> alt
-            (ATuple var0 var1 vars, body@(Fix (X _ bodyVars))) ->
-              (ATuple (underscore bodyVars var0) (underscore bodyVars var1) (map (underscore bodyVars) vars), body)
-            (ATupleU vars, body@(Fix (X _ bodyVars))) -> (ATupleU (map (underscore bodyVars) vars), body)
+            (ATuple var0 var1 vars, body) ->
+              let bodyVars = extra (unfix body)
+               in (ATuple (underscore bodyVars var0) (underscore bodyVars var1) (map (underscore bodyVars) vars), body)
+            (ATupleU vars, body) -> (ATupleU (map (underscore (extra (unfix body))) vars), body)
             alt@(ALit {}, _) -> alt
             alt@(AUnit, _) -> alt
-       in X (ECaseF scrutinee whnf1 (map f alternatives)) usedVars
-    X (EJoinF (JoinPointF ident vars defn@(Fix (X _ defnVars))) body) usedVars ->
-      X (EJoinF (JoinPointF ident (map (underscore defnVars) vars) defn) body) usedVars
-    expr@(X (EJoinrecF points body) usedVars) -> expr
-    expr@(X (ELamF bindings body) usedVars) -> expr
-    expr@(X (ELetF (LetBindingF ident defn) body) usedVars) -> expr
-    expr@(X (ELetrecF bindings body) usedVars) -> expr
+       in ECaseF freeIdents scrutinee whnf1 (map f alternatives)
+    EJoinF freeIdents (JoinPointF ident vars defn) body ->
+      EJoinF freeIdents (JoinPointF ident (map (underscore (extra (unfix defn))) vars) defn) body
+    expr@(EJoinrecF freeIdents points body) -> expr
+    expr@(ELamF freeIdents bindings body) -> expr
+    expr@(ELetF freeIdents (LetBindingF ident defn) usedVars) -> expr
+    expr@(ELetrecF freeIdents bindings body) -> expr
     --
-    expr@(X EAppF {} _) -> expr
-    expr@(X EIdF {} _) -> expr
-    expr@(X EJumpF {} _) -> expr
-    expr@(X ELitF {} _) -> expr
-    expr@(X ETupleF {} _) -> expr
-    expr@(X ETupleUF {} _) -> expr
-    expr@(X ETyF {} _) -> expr
+    expr@EAppF {} -> expr
+    expr@EIdF {} -> expr
+    expr@EJumpF {} -> expr
+    expr@ELitF {} -> expr
+    expr@ETupleF {} -> expr
+    expr@ETupleUF {} -> expr
+    expr@ETyF {} -> expr
   where
     underscore :: Set (Ident Text) -> Var Text -> Var Text
     underscore freeIdents = \case
@@ -367,11 +372,11 @@ instance Ord a => Ord (N a) where
 
 -- Give each ident an "occurrence number" of 0. This lets us reuse variables names (with a higher occurrence number)
 -- after they fall out of use.
-numberIdents :: Fix (X (ExprF var) (Set (Ident Text))) -> Fix (X (ExprF var) (Set (N (Ident Text))))
+numberIdents :: Fix (ExprF (Set (Ident Text)) Text) -> Fix (ExprF (Set (N (Ident Text))) Text)
 numberIdents =
-  topDown (\(X expr idents) -> X expr (Set.map (\ident -> N ident 0) idents))
+  topDown (overExtra (Set.map (\ident -> N ident 0)))
 
-renameVars :: Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
+renameVars :: Fix (ExprF (Set (Ident Text)) Text) -> Fix (ExprF (Set (Ident Text)) Text)
 renameVars expr =
   State.evalState (renameVars1 expr) supply2
   where
@@ -400,16 +405,16 @@ type NameSupply =
   [[N Text]]
 
 renameVars1 ::
-  Fix (X (ExprF Text) (Set (Ident Text))) ->
-  State.State NameSupply (Fix (X (ExprF Text) (Set (Ident Text))))
-renameVars1 expr0@(Fix (X expr1 freeIdents)) =
+  Fix (ExprF (Set (Ident Text)) Text) ->
+  State.State NameSupply (Fix (ExprF (Set (Ident Text)) Text))
+renameVars1 expr0@(Fix expr1) =
   case expr1 of
-    EAppF x0 y0 zs0 -> do
+    EAppF freeIdents x0 y0 zs0 -> do
       x1 <- renameVars1 x0
       y1 <- renameVars1 y0
       zs1 <- traverse renameVars1 zs0
-      pure (Fix (X (EAppF x1 y1 zs1) freeIdents))
-    ECaseF scrutinee0 whnf0 alternatives0 -> do
+      pure (Fix (EAppF freeIdents x1 y1 zs1))
+    ECaseF freeIdents scrutinee0 whnf0 alternatives0 -> do
       scrutinee1 <- renameVars1 scrutinee0
       (whnf1, alternatives1) <-
         case whnf0 of
@@ -445,51 +450,51 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
                   body1 <- renameVars1 body0
                   loop ((alt, body1) : acc) alts
       alternatives2 <- loop [] alternatives1
-      pure (Fix (X (ECaseF scrutinee1 whnf1 alternatives2) freeIdents))
-    EJoinF point0 body0 -> do
+      pure (Fix (ECaseF freeIdents scrutinee1 whnf1 alternatives2))
+    EJoinF freeIdents point0 body0 -> do
       point1 <- renameJoinPoint point0
       body1 <- renameVars1 body0
-      pure (Fix (X (EJoinF point1 body1) freeIdents))
-    EJoinrecF points0 body0 -> do
+      pure (Fix (EJoinF freeIdents point1 body1))
+    EJoinrecF freeIdents points0 body0 -> do
       points1 <- traverse renameJoinPoint points0
       body1 <- renameVars1 body0
-      pure (Fix (X (EJoinrecF points1 body1) freeIdents))
-    ELamF bindings0 body0 -> do
+      pure (Fix (EJoinrecF freeIdents points1 body1))
+    ELamF freeIdents bindings0 body0 -> do
       (bindings, body1) <- renameVarsIn bindings0 body0
       body2 <- renameVars1 body1
-      pure (Fix (X (ELamF bindings body2) freeIdents))
-    ELetF binding0 body0 -> do
+      pure (Fix (ELamF freeIdents bindings body2))
+    ELetF freeIdents binding0 body0 -> do
       binding1 <- renameLetBinding binding0
       body1 <- renameVars1 body0
-      pure (Fix (X (ELetF binding1 body1) freeIdents))
-    ELetrecF bindings0 body0 -> do
+      pure (Fix (ELetF freeIdents binding1 body1))
+    ELetrecF freeIdents bindings0 body0 -> do
       bindings1 <- traverse renameLetBinding bindings0
       body1 <- renameVars1 body0
-      pure (Fix (X (ELetrecF bindings1 body1) freeIdents))
-    ETupleF x0 y0 zs0 -> do
+      pure (Fix (ELetrecF freeIdents bindings1 body1))
+    ETupleF freeIdents x0 y0 zs0 -> do
       x1 <- renameVars1 x0
       y1 <- renameVars1 y0
       zs1 <- traverse renameVars1 zs0
-      pure (Fix (X (ETupleF x1 y1 zs1) freeIdents))
-    ETupleUF exprs0 -> do
+      pure (Fix (ETupleF freeIdents x1 y1 zs1))
+    ETupleUF freeIdents exprs0 -> do
       exprs1 <- traverse renameVars1 exprs0
-      pure (Fix (X (ETupleUF exprs1) freeIdents))
+      pure (Fix (ETupleUF freeIdents exprs1))
     --
     EIdF {} -> pure expr0
-    EJumpF -> pure expr0
+    EJumpF {} -> pure expr0
     ELitF {} -> pure expr0
     ETyF {} -> pure expr0
   where
     renameLetBinding ::
-      LetBindingF (Fix (X (ExprF Text) (Set (Ident Text)))) ->
-      State.State NameSupply (LetBindingF (Fix (X (ExprF Text) (Set (Ident Text)))))
+      LetBindingF (Fix (ExprF (Set (Ident Text)) Text)) ->
+      State.State NameSupply (LetBindingF (Fix (ExprF (Set (Ident Text)) Text)))
     renameLetBinding (LetBindingF ident defn0) = do
       defn1 <- renameVars1 defn0
       pure (LetBindingF ident defn1)
 
     renameJoinPoint ::
-      JoinPointF Text (Fix (X (ExprF Text) (Set (Ident Text)))) ->
-      State.State NameSupply (JoinPointF Text (Fix (X (ExprF Text) (Set (Ident Text)))))
+      JoinPointF Text (Fix (ExprF (Set (Ident Text)) Text)) ->
+      State.State NameSupply (JoinPointF Text (Fix (ExprF (Set (Ident Text)) Text)))
     renameJoinPoint (JoinPointF ident vars0 defn0) = do
       (vars1, defn1) <- renameVarsIn vars0 defn0
       defn2 <- renameVars1 defn1
@@ -506,8 +511,8 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     -- within `body`, in which case we'll move on to trying the best "b" name, and so on.
     renameVarIn ::
       Var Text ->
-      Fix (X (ExprF Text) (Set (Ident Text))) ->
-      State.State NameSupply (Var Text, Fix (X (ExprF Text) (Set (Ident Text))))
+      Fix (ExprF (Set (Ident Text)) Text) ->
+      State.State NameSupply (Var Text, Fix (ExprF (Set (Ident Text)) Text))
     renameVarIn var0 body =
       case var0 of
         Var old ty | old /= "_" -> do
@@ -517,8 +522,8 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
 
     renameVarsIn ::
       [Var Text] ->
-      Fix (X (ExprF Text) (Set (Ident Text))) ->
-      State.State NameSupply ([Var Text], Fix (X (ExprF Text) (Set (Ident Text))))
+      Fix (ExprF (Set (Ident Text)) Text) ->
+      State.State NameSupply ([Var Text], Fix (ExprF (Set (Ident Text)) Text))
     renameVarsIn vars0 body0 =
       let loop vars body = \case
             [] -> pure (reverse vars, body)
@@ -536,36 +541,15 @@ fresh = do
   pure name
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
--- FIXME inline this
-alphaRename :: Text -> Text -> Fix (X (ExprF Text) (Set (Ident Text))) -> Fix (X (ExprF Text) (Set (Ident Text)))
-alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
-  if Set.member oldIdent freeIdents
-    then
-      Fix $
-        X
-          ( case expr1 of
-              EAppF x y zs -> EAppF (recur x) (recur y) (map recur zs)
-              ECaseF scrutinee whnf alternatives ->
-                ECaseF (recur scrutinee) whnf (map (\(alt, body) -> (alt, recur body)) alternatives)
-              EIdF _ -> EIdF newIdent
-              EJoinF point body -> EJoinF (recurJoinPoint point) (recur body)
-              EJoinrecF points body -> EJoinrecF (map recurJoinPoint points) (recur body)
-              EJumpF -> expr1
-              ELamF bindings body -> ELamF bindings (recur body)
-              ELetF binding body -> ELetF (recurLetBinding binding) (recur body)
-              ELetrecF bindings body -> ELetrecF (map recurLetBinding bindings) (recur body)
-              ELitF _ -> expr1
-              ETupleF x y zs -> ETupleF (recur x) (recur y) (map recur zs)
-              ETupleUF exprs -> ETupleUF (map recur exprs)
-              ETyF _ -> expr1
-          )
-          (adjustFreeIdents freeIdents)
-    else expr0
+-- Preconditions: substituting naively avoids capture (i.e. no inner lambda binds `new`)
+alphaRename :: Text -> Text -> Fix (ExprF (Set (Ident Text)) Text) -> Fix (ExprF (Set (Ident Text)) Text)
+alphaRename old new =
+  topDownWithCutoff \expr -> do
+    if Set.member oldIdent (extra expr) -- but it is free somewhere in us
+      then case expr of
+        EIdF _ ident -> Left (if ident == oldIdent then EIdF (Set.singleton newIdent) newIdent else expr)
+        _ -> Right (overExtra (Set.insert newIdent . Set.delete oldIdent) expr)
+      else Left expr
   where
     oldIdent = varIdent old
     newIdent = varIdent new
-    recur = alphaRename old new
-    adjustFreeIdents = Set.insert newIdent . Set.delete oldIdent
-
-    recurLetBinding (LetBindingF ident defn) = LetBindingF ident (recur defn)
-    recurJoinPoint (JoinPointF ident bindings defn) = JoinPointF ident bindings (recur defn)
