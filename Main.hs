@@ -26,6 +26,7 @@ import Text.Megaparsec.Debug
 import Type
 
 main :: IO ()
+-- main = pure ()
 main = theMain
 
 theMain :: IO ()

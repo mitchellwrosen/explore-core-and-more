@@ -39,3 +39,7 @@ run on all of containers, text, bytestring, unordered-containers, parsec
 collect golden tests
 
 determine if singleton unboxed tuple exists, and if not, split TupleU intwo two (UnitU and 2+ TupleU)
+
+Letrec and Joinrec LocalDef constructors
+
+Join letrec+let, joinrec+join? is a 1-elem rec thing important to know it's recursive?

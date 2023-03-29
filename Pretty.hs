@@ -1,6 +1,5 @@
 module Pretty where
 
-import Control.Monad.Reader qualified as Reader
 import Control.Monad.Writer.CPS qualified as Writer
 import Data.Char (isUpper)
 import Data.Foldable (fold)
@@ -20,18 +19,46 @@ omitTypes = True
 liftLocalDefinitions :: Bool
 liftLocalDefinitions = True
 
+-- TODO rename prettyDefn or something
 prettyExpr :: Text -> Expr Text -> Text
-prettyExpr ident expr =
+prettyExpr ident defn =
   renderStrict (layoutPretty opts (styleAnn <$> doc))
   where
     opts = LayoutOptions {layoutPageWidth = AvailablePerLine 160 1}
 
     doc :: Doc Ann
-    doc =
-      defnDoc ident expr
-        & (`Reader.runReaderT` [])
-        & Writer.runWriter
-        & (\(doc0, _localDefns) -> doc0)
+    doc = render ident defn
+
+render :: Text -> Expr Text -> Doc Ann
+render ident defn =
+  let (doc, layers) = runAccum (renderDefn [] ident defn)
+   in loop doc layers
+  where
+    loop :: Doc Ann -> [([Text], [LocalDefn])] -> Doc Ann
+    loop acc = \case
+      [] -> acc
+      (context, defns) : layers ->
+        let (doc, moreLayers) = runAccum (renderLayer context defns)
+         in loop (acc <> hardline <> hardline <> doc) (layers ++ moreLayers)
+
+renderLayer :: [Text] -> [LocalDefn] -> Accum ([Text], [LocalDefn]) (Doc Ann)
+renderLayer context localDefns = do
+  localDefnDocs <- traverse (renderLocalDefn context) localDefns
+  pure (fold (punctuate (hardline <> hardline) localDefnDocs))
+
+renderLocalDefn :: [Text] -> LocalDefn -> Accum ([Text], [LocalDefn]) (Doc Ann)
+renderLocalDefn context = \case
+  Let (LetBinding ident defn) -> renderDefn context ident defn
+  -- FIXME reduce duplication, this check mark tweaking should only happen once no?
+  Join (JoinPoint ident bindings defn) -> renderDefn context (ident <> "✓") (ELam bindings defn)
+
+renderDefn :: [Text] -> Text -> Expr Text -> Accum ([Text], [LocalDefn]) (Doc Ann)
+renderDefn context ident defn =
+  case runAccum (defnDoc (Text.intercalate "/" (context ++ [ident])) defn) of
+    (doc, []) -> pure doc
+    (doc, localDefns) -> do
+      accum (context ++ [ident], localDefns)
+      pure doc
 
 data Ann
   = AnnColor Color
@@ -59,7 +86,7 @@ defnDoc ident = \case
   where
     go :: [Var Text] -> Expr Text -> M (Doc Ann)
     go bindings body = do
-      bodyDoc <- Reader.local (ident :) (exprDoc body)
+      bodyDoc <- exprDoc body
       pure (group (hang 2 (annotate AnnDefinition (pretty ident) <> space <> bindingsDoc bindings <> line <> bodyDoc)))
 
 bindingsDoc :: [Var Text] -> Doc Ann
@@ -71,10 +98,23 @@ bindingsDoc =
       bindings -> hsep bindings <> space
 
 type M a =
-  Reader.ReaderT [Text] (Writer.Writer (Endo [LocalDefn])) a
+  Accum LocalDefn a
+
+type Accum w a =
+  Writer.Writer (Endo [w]) a
+
+runAccum :: Accum w a -> (a, [w])
+runAccum m =
+  let (x, ws) = Writer.runWriter m
+   in (x, appEndo ws [])
+
+accum :: w -> Accum w ()
+accum w =
+  Writer.tell (Endo (w :))
 
 data LocalDefn
-  = Let [Text] (Expr Text)
+  = Let (LetBinding Text)
+  | Join (JoinPoint Text)
 
 exprDoc :: Expr Text -> M (Doc Ann)
 exprDoc =
@@ -223,11 +263,10 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
         <> altsDoc
 
 exprLetDoc :: Bool -> LetBinding Text -> Expr Text -> M (Doc Ann)
-exprLetDoc addParensIfSpaces binding@(LetBinding ident defn) body =
+exprLetDoc addParensIfSpaces binding@(LetBinding ident _) body =
   if liftLocalDefinitions
     then do
-      context <- Reader.ask
-      Writer.tell (Endo (Let context defn :))
+      accum (Let binding)
       bodyDoc <- exprDoc body
       pure (parenify addParensIfSpaces ((annotate AnnDefinition (pretty ident) <> " = ...") <> hardline <> bodyDoc))
     else do
@@ -251,15 +290,21 @@ exprLetrecDoc addParensIfSpaces bindings body = do
 
 exprJoinDoc :: Bool -> JoinPoint Text -> Expr Text -> M (Doc Ann)
 exprJoinDoc addParensIfSpaces point body = do
-  bodyDoc <- exprDoc body
-  pure $
-    parenify addParensIfSpaces $
-      -- group (joinPointDoc point)
-      ( case point of
-          JoinPoint ident _ _ -> annotate AnnDefinition (pretty ident) <> " = ..."
-      )
-        <> hardline
-        <> bodyDoc
+  if liftLocalDefinitions
+    then do
+      accum (Join point)
+      bodyDoc <- exprDoc body
+      pure $
+        parenify addParensIfSpaces $
+          ( case point of
+              JoinPoint ident _ _ -> annotate AnnDefinition (pretty (ident <> "✓")) <> " = ..."
+          )
+            <> hardline
+            <> bodyDoc
+    else do
+      pointDoc <- joinPointDoc point
+      bodyDoc <- exprDoc body
+      pure (parenify addParensIfSpaces (group pointDoc <> hardline <> bodyDoc))
 
 exprJoinrecDoc :: Bool -> [JoinPoint Text] -> Expr Text -> M (Doc Ann)
 exprJoinrecDoc addParensIfSpaces points body = do
@@ -268,7 +313,7 @@ exprJoinrecDoc addParensIfSpaces points body = do
     parenify addParensIfSpaces $
       -- group (fold (punctuate hardline (map joinPointDoc points)))
       ( points
-          & map (\(JoinPoint ident _ _) -> annotate AnnDefinition (pretty ident) <> " = ...")
+          & map (\(JoinPoint ident _ _) -> annotate AnnDefinition (pretty (ident <> "✓")) <> " = ...")
           & punctuate hardline
           & fold
       )
