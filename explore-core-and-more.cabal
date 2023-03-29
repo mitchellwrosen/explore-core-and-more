@@ -13,6 +13,7 @@ executable explore-core-and-more
     pretty-simple ^>= 4.1,
     prettyprinter ^>= 1.7,
     prettyprinter-ansi-terminal ^>= 1.1,
+    process ^>= 1.6.16,
     text ^>= 2.0,
     transformers ^>= 0.6,
   default-extensions:

@@ -18,6 +18,7 @@ import Debug.Trace
 import Expr
 import Pretty (prettyExpr)
 import System.Environment (getArgs)
+import qualified System.Process as Process
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Char.Lexer (decimal)
@@ -26,26 +27,46 @@ import Type
 
 main :: IO ()
 main = do
-  contents <- do
-    file <-
-      getArgs <&> \case
-        [file] -> file
-        _ -> ".simpl/Demeter.dump-simpl"
-    Text.decodeUtf8 <$> ByteString.readFile file
-  case runParser parser "" contents of
-    Left err -> putStrLn (errorBundlePretty err)
-    Right (result, rest) -> do
-      -- pPrintForceColor result
-      -- Text.putStrLn ""
-      let putTerm Term {identifier, expr} = do
-            -- Text.putStrLn (prettyExpr identifier expr)
-            -- Text.putStrLn ""
-            Text.putStrLn (prettyExpr identifier (optimizeExpression expr))
-            Text.putStrLn ""
-      for_ (declarations result) \case
-        DeclTerm term -> putTerm term
-        DeclRec terms -> for_ terms putTerm
-      Text.putStrLn ("\n" <> Text.pack (show rest))
+  getArgs >>= \case
+    "ghc" : ghcArgs -> do
+      let ghcOptions =
+            [ "-ddump-simpl",
+              "-ddump-to-file",
+              "-dsuppress-coercion-types",
+              "-dsuppress-coercions",
+              "-dsuppress-core-sizes",
+              "-dsuppress-idinfo",
+              "-dsuppress-timestamps",
+              "-dsuppress-unfoldings",
+              "-fforce-recomp"
+            ]
+      Process.callProcess "ghc-9.4" (["-O"] ++ ghcOptions ++ ghcArgs)
+    args -> do
+      files <- do
+        let prefix =
+              case args of
+                [str] -> str
+                _ -> ""
+        lines <$> Process.readProcess "fd" ["-H", "-I", prefix ++ ".dump-simpl"] ""
+      case files of
+        [file] -> do
+          contents <- Text.decodeUtf8 <$> ByteString.readFile file
+          case runParser parser "" contents of
+            Left err -> putStrLn (errorBundlePretty err)
+            Right (result, rest) -> do
+              -- pPrintForceColor result
+              -- Text.putStrLn ""
+              let putTerm Term {identifier, expr} = do
+                    -- Text.putStrLn (prettyExpr identifier expr)
+                    -- Text.putStrLn ""
+                    Text.putStrLn (prettyExpr identifier (optimizeExpression expr))
+                    Text.putStrLn ""
+              for_ (declarations result) \case
+                DeclTerm term -> putTerm term
+                DeclRec terms -> for_ terms putTerm
+              when (rest /= Text.empty) do
+                Text.putStrLn ("\nTrailing input: " <> Text.pack (show rest))
+        _ -> Text.putStr (Text.pack (unlines files))
 
 type P = Parsec Void Text
 
@@ -65,7 +86,7 @@ parser = do
   declarations <- many declarationP
 
   rest <- takeRest
-  pure (Dump {size, declarations}, Text.take 60 rest <> " ...")
+  pure (Dump {size, declarations}, Text.take 60 rest)
 
 data CoreSize = CoreSize
   { terms :: Int,
