@@ -12,7 +12,7 @@ import Type
 data Expr
   = EApp Expr Expr [Expr]
   | ECase Expr (Maybe Text) [(Alternative Text, Expr)]
-  | EId Ident
+  | EId (Ident Text)
   | EJoin JoinPoint Expr
   | EJoinrec [JoinPoint] Expr
   | EJump
@@ -36,18 +36,18 @@ isEVar = \case
   EId (Ident Nothing [] var) -> Just var
   _ -> Nothing
 
-data Ident = Ident
+data Ident var = Ident
   { package :: Maybe Text,
     modules :: [Text],
-    name :: Text
+    name :: var
   }
   deriving stock (Eq, Ord, Show)
 
-varIdent :: Text -> Ident
+varIdent :: var -> Ident var
 varIdent =
   Ident Nothing []
 
-identVar :: Ident -> Text
+identVar :: Ident Text -> Text
 identVar Ident {package, modules, name} =
   fromMaybe Text.empty package <> foldMap (\m -> m <> ".") modules <> name
 
@@ -84,13 +84,13 @@ instance Ord var => Ord (Var var) where
   compare (Var x _) (Var y _) = compare x y
   compare (Var _ _) (Tyvar _ _) = GT
 
-varToTermIdent :: Var Text -> Maybe Ident
+varToTermIdent :: Var var -> Maybe (Ident var)
 varToTermIdent = \case
   Var var _ -> Just (varIdent var)
   Tyvar {} -> Nothing
 
 data Alternative var
-  = ACon Ident [Var var]
+  = ACon (Ident var) [Var var]
   | ADef
   | ALit Lit
   | ATuple (Var var) (Var var) [Var var]
@@ -122,7 +122,7 @@ optimizeExpression =
 data ExprF a
   = EAppF a a [a]
   | ECaseF a (Maybe Text) [(Alternative Text, a)]
-  | EIdF Ident
+  | EIdF (Ident Text)
   | EJoinF (JoinPointF a) a
   | EJoinrecF [JoinPointF a] a
   | EJumpF
@@ -219,7 +219,7 @@ unannotate =
 -- Replace unused vars with underscores
 
 -- Annotate each expression with all of the term identifiers that are used within it
-annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set Ident))
+annotateUsedIdentifiers :: Fix ExprF -> Fix (X ExprF (Set (Ident Text)))
 annotateUsedIdentifiers expr =
   case unfix expr of
     EAppF x y zs ->
@@ -301,12 +301,12 @@ annotateUsedIdentifiers expr =
        in Fix (X (ETupleUF exprs1) (Set.unions vs))
     ETyF ty -> Fix (X (ETyF ty) Set.empty)
   where
-    recur :: Fix ExprF -> (Fix (X ExprF (Set Ident)), Set Ident)
+    recur :: Fix ExprF -> (Fix (X ExprF (Set (Ident Text))), Set (Ident Text))
     recur x =
       let y@(Fix (X _ v)) = annotateUsedIdentifiers x
        in (y, v)
 
-replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
+replaceUnusedVarsWithUnderscores :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
 replaceUnusedVarsWithUnderscores =
   bottomUp1 \case
     X (ECaseF scrutinee whnf alternatives) usedVars ->
@@ -320,7 +320,7 @@ replaceUnusedVarsWithUnderscores =
                   then Just s
                   else -- no pattern used whnf (yet GHC named it anyway)
                     Nothing
-          f :: (Alternative Text, Fix (X ExprF (Set Ident))) -> (Alternative Text, Fix (X ExprF (Set Ident)))
+          f :: (Alternative Text, Fix (X ExprF (Set (Ident Text)))) -> (Alternative Text, Fix (X ExprF (Set (Ident Text))))
           f = \case
             (ACon con vars, body@(Fix (X _ bodyVars))) ->
               (ACon con (map (underscore bodyVars) vars), body)
@@ -346,7 +346,7 @@ replaceUnusedVarsWithUnderscores =
     expr@(X ETupleUF {} _) -> expr
     expr@(X ETyF {} _) -> expr
   where
-    underscore :: Set Ident -> Var Text -> Var Text
+    underscore :: Set (Ident Text) -> Var Text -> Var Text
     underscore freeIdents = \case
       var@(Var v ty) ->
         if Set.member (varIdent v) freeIdents
@@ -365,11 +365,11 @@ instance Ord a => Ord (N a) where
 
 -- Give each ident an "occurrence number" of 0. This lets us reuse variables names (with a higher occurrence number)
 -- after they fall out of use.
-numberIdents :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set (N Ident)))
+numberIdents :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (N (Ident Text))))
 numberIdents =
   topDown (\(X expr idents) -> X expr (Set.map (\ident -> N ident 0) idents))
 
-renameVars :: Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
+renameVars :: Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
 renameVars expr =
   State.evalState (renameVars1 expr) supply2
   where
@@ -397,7 +397,7 @@ renameVars expr =
 type NameSupply =
   [[N Text]]
 
-renameVars1 :: Fix (X ExprF (Set Ident)) -> State.State NameSupply (Fix (X ExprF (Set Ident)))
+renameVars1 :: Fix (X ExprF (Set (Ident Text))) -> State.State NameSupply (Fix (X ExprF (Set (Ident Text))))
 renameVars1 expr0@(Fix (X expr1 freeIdents)) =
   case expr1 of
     EAppF x0 y0 zs0 -> do
@@ -477,15 +477,15 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     ETyF {} -> pure expr0
   where
     renameLetBinding ::
-      LetBindingF (Fix (X ExprF (Set Ident))) ->
-      State.State NameSupply (LetBindingF (Fix (X ExprF (Set Ident))))
+      LetBindingF (Fix (X ExprF (Set (Ident Text)))) ->
+      State.State NameSupply (LetBindingF (Fix (X ExprF (Set (Ident Text)))))
     renameLetBinding (LetBindingF ident defn0) = do
       defn1 <- renameVars1 defn0
       pure (LetBindingF ident defn1)
 
     renameJoinPoint ::
-      JoinPointF (Fix (X ExprF (Set Ident))) ->
-      State.State NameSupply (JoinPointF (Fix (X ExprF (Set Ident))))
+      JoinPointF (Fix (X ExprF (Set (Ident Text)))) ->
+      State.State NameSupply (JoinPointF (Fix (X ExprF (Set (Ident Text)))))
     renameJoinPoint (JoinPointF ident vars0 defn0) = do
       (vars1, defn1) <- renameVarsIn vars0 defn0
       defn2 <- renameVars1 defn1
@@ -500,7 +500,10 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
     --
     -- We'd like to use the best "a" name (a1), unless an "a" name (which would be the previous one, a0) is still used
     -- within `body`, in which case we'll move on to trying the best "b" name, and so on.
-    renameVarIn :: Var Text -> Fix (X ExprF (Set Ident)) -> State.State NameSupply (Var Text, Fix (X ExprF (Set Ident)))
+    renameVarIn ::
+      Var Text ->
+      Fix (X ExprF (Set (Ident Text))) ->
+      State.State NameSupply (Var Text, Fix (X ExprF (Set (Ident Text))))
     renameVarIn var0 body =
       case var0 of
         Var old ty | old /= "_" -> do
@@ -510,8 +513,8 @@ renameVars1 expr0@(Fix (X expr1 freeIdents)) =
 
     renameVarsIn ::
       [Var Text] ->
-      Fix (X ExprF (Set Ident)) ->
-      State.State NameSupply ([Var Text], Fix (X ExprF (Set Ident)))
+      Fix (X ExprF (Set (Ident Text))) ->
+      State.State NameSupply ([Var Text], Fix (X ExprF (Set (Ident Text))))
     renameVarsIn vars0 body0 =
       let loop vars body = \case
             [] -> pure (reverse vars, body)
@@ -529,7 +532,8 @@ fresh = do
   pure name
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
-alphaRename :: Text -> Text -> Fix (X ExprF (Set Ident)) -> Fix (X ExprF (Set Ident))
+-- FIXME inline this
+alphaRename :: Text -> Text -> Fix (X ExprF (Set (Ident Text))) -> Fix (X ExprF (Set (Ident Text)))
 alphaRename old new expr0@(Fix (X expr1 freeIdents)) =
   if Set.member oldIdent freeIdents
     then

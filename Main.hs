@@ -427,7 +427,7 @@ joinPointP = do
   _ <- optional (string_ ";")
   pure (JoinPoint ident bindings expr)
 
-eidentP :: P Ident
+eidentP :: P (Ident Text)
 eidentP = do
   -- we don't want to accept identifiers at column 1 here
   SourcePos {sourceColumn} <- getSourcePos

@@ -336,7 +336,7 @@ alternativesDoc =
       x@(ADef {}, _) : xs -> xs ++ [x]
       xs -> xs
 
-identDoc :: Ident -> Doc Ann
+identDoc :: Ident Text -> Doc Ann
 identDoc Ident {name} =
   pretty name
 
