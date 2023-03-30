@@ -63,7 +63,7 @@ theMain = do
               let putTerm Term {identifier, expr} = do
                     -- Text.putStrLn (prettyExpr identifier expr)
                     -- Text.putStrLn ""
-                    Text.putStrLn (prettyExpr identifier (optimizeExpression expr))
+                    Text.putStrLn (prettyExpr (N identifier 0) (optimizeExpression expr))
                     Text.putStrLn ""
               for_ (declarations result) \case
                 DeclTerm term -> putTerm term
