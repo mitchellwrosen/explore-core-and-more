@@ -2,9 +2,7 @@ module Expr where
 
 import Control.Lens (Traversal, mapped, over, view, _1)
 import Control.Monad.State.Strict qualified as State
-import Data.Data.Lens (biplate)
 import Data.Function ((&))
-import Data.Functor.Identity
 import Data.Generics.Product (position)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Set (Set)
@@ -443,7 +441,7 @@ renameVars1 expr0@(Fix expr1) =
         case whnf0 of
           Nothing -> pure (Nothing, alternatives0)
           Just old -> do
-            new <- fresh
+            new <- fresh freeIdents
             pure (Just new, map (\(alt, body) -> (alt, alphaRename old new body)) alternatives0)
       let loop acc = \case
             [] -> pure (reverse acc)
@@ -539,7 +537,7 @@ renameVars1 expr0@(Fix expr1) =
     renameVarIn var0 body =
       case var0 of
         Var old@(N s _) ty | s /= "_" -> do
-          new <- fresh
+          new <- fresh (extra body)
           pure (Var new ty, alphaRename old new body)
         _ -> pure (var0, body)
 
@@ -556,11 +554,21 @@ renameVars1 expr0@(Fix expr1) =
        in loop [] body0 vars0
 
 -- FIXME hmm don't want to use something from the supply that's bound!
-fresh :: State.State NameSupply (N Text)
-fresh = do
-  supply <- State.get
-  State.put (tail supply)
-  pure (head (head supply))
+fresh :: Set (Ident (N Text)) -> State.State NameSupply (N Text)
+fresh freeIdents = do
+  supply0 <- State.get
+  let (var, supply1) = loop [] supply0
+  State.put supply1
+  pure var
+  where
+    loop :: [[N Text]] -> [[N Text]] -> (N Text, [[N Text]])
+    loop acc supply =
+      let xs = head supply
+          ys = tail supply
+          x = head xs
+       in if Set.member (varIdent x) freeIdents
+            then loop (xs : acc) ys
+            else (x, reverse acc ++ [tail xs] ++ ys)
 
 -- `alphaRename old new expr` renames all free `old` to `new` in `expr`
 -- Preconditions: substituting naively avoids capture (i.e. no inner lambda binds `new`)
