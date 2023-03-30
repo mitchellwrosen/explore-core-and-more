@@ -22,9 +22,9 @@ liftLocalDefinitions = True
 -- TODO rename prettyDefn or something
 prettyExpr :: N Text -> Expr (N Text) -> Text
 prettyExpr ident defn =
-  renderStrict (layoutPretty opts (styleAnn <$> doc))
+  renderStrict (layoutPretty opts (styleAnn <$> indent 2 doc))
   where
-    opts = LayoutOptions {layoutPageWidth = AvailablePerLine 160 1}
+    opts = LayoutOptions {layoutPageWidth = AvailablePerLine 120 1}
 
     doc :: Doc Ann
     doc = render ident defn

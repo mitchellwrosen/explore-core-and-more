@@ -445,7 +445,7 @@ renameVars1 expr0@(Fix expr1) =
         case whnf0 of
           Nothing -> pure (Nothing, alternatives0)
           Just old -> do
-            new <- fresh freeIdents
+            new <- fresh (foldMap (\(_alt, body) -> extra body) alternatives0)
             pure (Just new, map (\(alt, body) -> (alt, alphaRename old new body)) alternatives0)
       supply2 <- State.get
       let loop acc = \case
@@ -491,8 +491,7 @@ renameVars1 expr0@(Fix expr1) =
       pure (Fix (EJoinF freeIdents point1 body1))
     EJoinrecF freeIdents points0 body0 -> do
       supply <- State.get
-      points1 <- traverse renameJoinPoint points0
-      State.put supply
+      points1 <- traverse (\point -> renameJoinPoint point <* State.put supply) points0
       body1 <- renameVars1 body0
       pure (Fix (EJoinrecF freeIdents points1 body1))
     ELamF freeIdents bindings0 body0 -> do
@@ -507,8 +506,7 @@ renameVars1 expr0@(Fix expr1) =
       pure (Fix (ELetF freeIdents binding1 body1))
     ELetrecF freeIdents bindings0 body0 -> do
       supply <- State.get
-      bindings1 <- traverse renameLetBinding bindings0
-      State.put supply
+      bindings1 <- traverse (\binding -> renameLetBinding binding <* State.put supply) bindings0
       body1 <- renameVars1 body0
       pure (Fix (ELetrecF freeIdents bindings1 body1))
     ETupleF freeIdents x0 y0 zs0 -> do
