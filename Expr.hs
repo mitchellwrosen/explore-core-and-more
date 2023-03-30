@@ -431,18 +431,23 @@ renameVars1 ::
 renameVars1 expr0@(Fix expr1) =
   case expr1 of
     EAppF freeIdents x0 y0 zs0 -> do
+      supply <- State.get
       x1 <- renameVars1 x0
+      State.put supply
       y1 <- renameVars1 y0
-      zs1 <- traverse renameVars1 zs0
+      zs1 <- traverse (\z0 -> State.put supply >> renameVars1 z0) zs0
       pure (Fix (EAppF freeIdents x1 y1 zs1))
     ECaseF freeIdents scrutinee0 whnf0 alternatives0 -> do
+      supply <- State.get
       scrutinee1 <- renameVars1 scrutinee0
+      State.put supply
       (whnf1, alternatives1) <-
         case whnf0 of
           Nothing -> pure (Nothing, alternatives0)
           Just old -> do
             new <- fresh freeIdents
             pure (Just new, map (\(alt, body) -> (alt, alphaRename old new body)) alternatives0)
+      supply2 <- State.get
       let loop acc = \case
             [] -> pure (reverse acc)
             (alt, body0) : alts ->
@@ -450,34 +455,44 @@ renameVars1 expr0@(Fix expr1) =
                 ACon con vars0 -> do
                   (vars, body1) <- renameVarsIn vars0 body0
                   body2 <- renameVars1 body1
+                  State.put supply2
                   loop ((ACon con vars, body2) : acc) alts
                 ADef -> do
                   body1 <- renameVars1 body0
+                  State.put supply2
                   loop ((alt, body1) : acc) alts
                 ALit _ -> do
                   body1 <- renameVars1 body0
+                  State.put supply2
                   loop ((alt, body1) : acc) alts
                 ATuple x0 y0 zs0 -> do
                   (x1, body1) <- renameVarIn x0 body0
                   (y1, body2) <- renameVarIn y0 body1
                   (zs1, body3) <- renameVarsIn zs0 body2
                   body4 <- renameVars1 body3
+                  State.put supply2
                   loop ((ATuple x1 y1 zs1, body4) : acc) alts
                 ATupleU vars0 -> do
                   (vars, body1) <- renameVarsIn vars0 body0
                   body2 <- renameVars1 body1
+                  State.put supply2
                   loop ((ATupleU vars, body2) : acc) alts
                 AUnit -> do
                   body1 <- renameVars1 body0
+                  State.put supply2
                   loop ((alt, body1) : acc) alts
       alternatives2 <- loop [] alternatives1
       pure (Fix (ECaseF freeIdents scrutinee1 whnf1 alternatives2))
     EJoinF freeIdents point0 body0 -> do
+      supply <- State.get
       point1 <- renameJoinPoint point0
+      State.put supply
       body1 <- renameVars1 body0
       pure (Fix (EJoinF freeIdents point1 body1))
     EJoinrecF freeIdents points0 body0 -> do
+      supply <- State.get
       points1 <- traverse renameJoinPoint points0
+      State.put supply
       body1 <- renameVars1 body0
       pure (Fix (EJoinrecF freeIdents points1 body1))
     ELamF freeIdents bindings0 body0 -> do
@@ -485,20 +500,27 @@ renameVars1 expr0@(Fix expr1) =
       body2 <- renameVars1 body1
       pure (Fix (ELamF freeIdents bindings body2))
     ELetF freeIdents binding0 body0 -> do
+      supply <- State.get
       binding1 <- renameLetBinding binding0
+      State.put supply
       body1 <- renameVars1 body0
       pure (Fix (ELetF freeIdents binding1 body1))
     ELetrecF freeIdents bindings0 body0 -> do
+      supply <- State.get
       bindings1 <- traverse renameLetBinding bindings0
+      State.put supply
       body1 <- renameVars1 body0
       pure (Fix (ELetrecF freeIdents bindings1 body1))
     ETupleF freeIdents x0 y0 zs0 -> do
+      supply <- State.get
       x1 <- renameVars1 x0
+      State.put supply
       y1 <- renameVars1 y0
-      zs1 <- traverse renameVars1 zs0
+      zs1 <- traverse (\z -> State.put supply >> renameVars1 z) zs0
       pure (Fix (ETupleF freeIdents x1 y1 zs1))
     ETupleUF freeIdents exprs0 -> do
-      exprs1 <- traverse renameVars1 exprs0
+      supply <- State.get
+      exprs1 <- traverse (\e -> State.put supply >> renameVars1 e) exprs0
       pure (Fix (ETupleUF freeIdents exprs1))
     --
     EIdF {} -> pure expr0
