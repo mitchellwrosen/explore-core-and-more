@@ -20,6 +20,10 @@ omitTypes = True
 liftLocalDefinitions :: Bool
 liftLocalDefinitions = False
 
+-- show matches like: Foobar _ _ <- !!sup
+showRedundantPatterns :: Bool
+showRedundantPatterns = False
+
 -- TODO rename prettyDefn or something
 prettyExpr :: N Text -> Expr (N Text) -> Text
 prettyExpr ident defn =
@@ -73,7 +77,7 @@ showVar = \case
   N s i -> unmangle s <> Text.pack (show i)
   where
     unmangle s
-      | Text.isPrefixOf "$j" s = Text.drop 2 s <> mathy "/joinpoint"
+      | Text.isPrefixOf "$j_" s = Text.drop 3 s <> mathy "/joinpoint"
       | Text.isPrefixOf "$s" s = Text.drop 2 s <> mathy "/specialized"
       | Text.isPrefixOf "$w$j_" s = Text.drop 5 s <> mathy "/joinpoint/worker"
       | Text.isPrefixOf "$w" s = Text.drop 2 s <> mathy "/worker"
@@ -223,12 +227,32 @@ exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
   bodyDoc <- exprDoc body
   pure $
     parenify addParensIfSpaces $
-      ( case alternative of
-          ADef -> group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
-          _ ->
-            alternativeDoc False alternative
-              <> " ← "
-              <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+      ( let verbose =
+              let ignorable = \case
+                    -- FIXME not actually ignorable for the purpose of understanding the meaning of a program, because
+                    -- might bind tyvars here that we reference later
+                    Tyvar _ _ -> True
+                    Var ident _ ->
+                      case ident of
+                        N "_" _ -> True
+                        _ -> False
+                  treatAsIgnorable bindings =
+                    if showRedundantPatterns
+                      then False
+                      else all ignorable bindings
+               in case alternative of
+                    ACon _con bindings -> not (treatAsIgnorable bindings)
+                    ADef -> False
+                    ALit _lit -> showRedundantPatterns
+                    ATuple x y zs -> not (treatAsIgnorable (x : y : zs))
+                    ATupleU xs -> not (treatAsIgnorable xs)
+                    AUnit -> showRedundantPatterns
+         in if verbose
+              then
+                alternativeDoc False alternative
+                  <> " ← "
+                  <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+              else group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
       )
         <> hardline
         <> bodyDoc
@@ -241,7 +265,8 @@ exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
   pure $
     parenify addParensIfSpaces $
       renderVar whnf
-        <> ( case alternative of
+        <> ( -- don't even know if GHC will ever write 'case foo of _ {'
+             case alternative of
                ADef -> mempty
                _ -> " = " <> alternativeDoc False alternative
            )
