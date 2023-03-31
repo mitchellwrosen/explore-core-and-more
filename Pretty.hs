@@ -6,6 +6,7 @@ import Data.Foldable (fold)
 import Data.Function ((&))
 import Data.Maybe (mapMaybe)
 import Data.Monoid (Endo (..))
+import Data.String (IsString (fromString))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Expr
@@ -17,7 +18,7 @@ omitTypes :: Bool
 omitTypes = True
 
 liftLocalDefinitions :: Bool
-liftLocalDefinitions = True
+liftLocalDefinitions = False
 
 -- TODO rename prettyDefn or something
 prettyExpr :: N Text -> Expr (N Text) -> Text
@@ -49,21 +50,35 @@ renderLayer context localDefns = do
 renderLocalDefn :: [Text] -> LocalDefn -> Accum ([Text], [LocalDefn]) (Doc Ann)
 renderLocalDefn context = \case
   Let (LetBinding ident defn) -> renderDefn context ident defn
+  Letrec bindings -> renderLayer context (map Let bindings)
   -- FIXME reduce duplication, this check mark tweaking should only happen once no?
   Join (JoinPoint (N ident i) bindings defn) -> renderDefn context (N (ident <> "✓") i) (ELam bindings defn)
+  Joinrec points -> renderLayer context (map Join points)
 
 renderDefn :: [Text] -> N Text -> Expr (N Text) -> Accum ([Text], [LocalDefn]) (Doc Ann)
 renderDefn context ident defn =
-  case runAccum (defnDoc (zeroth (Text.intercalate "/" (context ++ [showN ident]))) defn) of
+  case runAccum (defnDoc (zeroth (Text.intercalate "|" (context ++ [showVar ident]))) defn) of
     (doc, []) -> pure doc
     (doc, localDefns) -> do
-      accum (context ++ [showN ident], localDefns)
+      accum (context ++ [showVar ident], localDefns)
       pure doc
 
-showN :: N Text -> Text
-showN = \case
-  N s 0 -> s
-  N s i -> s <> Text.pack (show i)
+renderVar :: N Text -> Doc a
+renderVar =
+  pretty . showVar
+
+showVar :: N Text -> Text
+showVar = \case
+  N s 0 -> unmangle s
+  N s i -> unmangle s <> Text.pack (show i)
+  where
+    unmangle s
+      | Text.isPrefixOf "$j" s = Text.drop 2 s <> mathy "/joinpoint"
+      | Text.isPrefixOf "$s" s = Text.drop 2 s <> mathy "/specialized"
+      | Text.isPrefixOf "$w$j_" s = Text.drop 5 s <> mathy "/joinpoint/worker"
+      | Text.isPrefixOf "$w" s = Text.drop 2 s <> mathy "/worker"
+      | Text.isPrefixOf "C:" s = Text.drop 2 s <> mathy "Dict"
+      | otherwise = s
 
 data Ann
   = AnnColor Color
@@ -96,7 +111,7 @@ defnDoc ident = \case
         group $
           hang
             2
-            ( annotate AnnDefinition (pretty (showN ident))
+            ( annotate AnnDefinition (renderVar ident)
                 <> space
                 <> bindingsDoc bindings
                 <> line
@@ -128,7 +143,9 @@ accum w =
 
 data LocalDefn
   = Let (LetBinding (N Text))
+  | Letrec [LetBinding (N Text)]
   | Join (JoinPoint (N Text))
+  | Joinrec [JoinPoint (N Text)]
 
 exprDoc :: Expr (N Text) -> M (Doc Ann)
 exprDoc =
@@ -142,18 +159,18 @@ exprDoc_ addParensIfSpaces = \case
       -- rename ghc-prim:GHC.Prim.(##) and ghc-prim:GHC.Tuple.() at print-time
       name1 =
         case name0 of
-          N "()" i -> N "𝘵" i
-          N "(##)" i -> N "𝘵#" i
+          N "()" i -> N (mathy "t") i
+          N "(##)" i -> N (mathy "t#") i
           _ -> name0
       ident1 = ident0 {name = name1}
 
       isConstructor :: N Text -> Bool
       isConstructor (N s _) =
         isUpper (Text.head s)
-          || s == "𝘤𝘰𝘯𝘴"
-          || s == "𝘯𝘪𝘭"
-          || s == "𝘵"
-          || s == "𝘵#"
+          || s == mathy "cons"
+          || s == mathy "nil"
+          || s == mathy "t"
+          || s == mathy "t#"
   ELit lit -> pure (annotate AnnLiteral (litDoc lit))
   (slurpListExpr -> Just (expr, exprs)) ->
     if expr == eNil
@@ -223,7 +240,7 @@ exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
   bodyDoc <- exprDoc body
   pure $
     parenify addParensIfSpaces $
-      pretty (showN whnf)
+      renderVar whnf
         <> ( case alternative of
                ADef -> mempty
                _ -> " = " <> alternativeDoc False alternative
@@ -240,7 +257,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf [] = do
     parenify addParensIfSpaces $
       ( case whnf of
           Nothing -> group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
-          Just s -> pretty (showN s) <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+          Just s -> renderVar s <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
       )
 -- case scrutinee of [whnf] {
 --   alternative1 -> body1
@@ -264,7 +281,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
           Just s ->
             group
               ( flatAlt
-                  ( pretty (showN s)
+                  ( renderVar s
                       <> " ← "
                       <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
                       <> hardline
@@ -272,7 +289,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
                   )
                   ( annotate AnnKeyword "switch"
                       <> space
-                      <> pretty (showN s)
+                      <> renderVar s
                       <> " = "
                       <> annotate (AnnColor Red) "‼"
                       <> scrutineeDoc
@@ -291,7 +308,7 @@ exprLetDoc addParensIfSpaces binding@(LetBinding ident _) body =
       pure $
         parenify
           addParensIfSpaces
-          ((annotate AnnDefinition (pretty (showN ident)) <> " = ...") <> hardline <> bodyDoc)
+          ((annotate AnnDefinition (renderVar ident) <> " = ...") <> hardline <> bodyDoc)
     else do
       letDoc <- letBindingDoc binding
       bodyDoc <- exprDoc body
@@ -299,17 +316,27 @@ exprLetDoc addParensIfSpaces binding@(LetBinding ident _) body =
 
 exprLetrecDoc :: Bool -> [LetBinding (N Text)] -> Expr (N Text) -> M (Doc Ann)
 exprLetrecDoc addParensIfSpaces bindings body = do
-  bodyDoc <- exprDoc body
-  pure $
-    parenify addParensIfSpaces $
-      -- group (fold (punctuate hardline (map letBindingDoc bindings)))
-      ( bindings
-          & map (\(LetBinding ident _) -> annotate AnnDefinition (pretty (showN ident)) <> " = ...")
-          & punctuate hardline
-          & fold
-      )
-        <> hardline
-        <> bodyDoc
+  if liftLocalDefinitions
+    then do
+      accum (Letrec bindings)
+      bodyDoc <- exprDoc body
+      pure $
+        parenify addParensIfSpaces $
+          ( bindings
+              & map (\(LetBinding ident _) -> annotate AnnDefinition (renderVar ident) <> " = ...")
+              & punctuate hardline
+              & fold
+          )
+            <> hardline
+            <> bodyDoc
+    else do
+      letDocs <- traverse letBindingDoc bindings
+      bodyDoc <- exprDoc body
+      pure $
+        parenify addParensIfSpaces $
+          group (fold (punctuate hardline letDocs))
+            <> hardline
+            <> bodyDoc
 
 exprJoinDoc :: Bool -> JoinPoint (N Text) -> Expr (N Text) -> M (Doc Ann)
 exprJoinDoc addParensIfSpaces point body = do
@@ -320,7 +347,7 @@ exprJoinDoc addParensIfSpaces point body = do
       pure $
         parenify addParensIfSpaces $
           ( case point of
-              JoinPoint (N ident i) _ _ -> annotate AnnDefinition (pretty (showN (N (ident <> "✓") i))) <> " = ..."
+              JoinPoint (N ident i) _ _ -> annotate AnnDefinition (renderVar (N (ident <> "✓") i)) <> " = ..."
           )
             <> hardline
             <> bodyDoc
@@ -331,20 +358,30 @@ exprJoinDoc addParensIfSpaces point body = do
 
 exprJoinrecDoc :: Bool -> [JoinPoint (N Text)] -> Expr (N Text) -> M (Doc Ann)
 exprJoinrecDoc addParensIfSpaces points body = do
-  bodyDoc <- exprDoc body
-  pure $
-    parenify addParensIfSpaces $
-      -- group (fold (punctuate hardline (map joinPointDoc points)))
-      ( points
-          & map
-            ( \(JoinPoint (N ident i) _ _) ->
-                annotate AnnDefinition (pretty (showN (N (ident <> "✓") i))) <> " = ..."
-            )
-          & punctuate hardline
-          & fold
-      )
-        <> hardline
-        <> bodyDoc
+  if liftLocalDefinitions
+    then do
+      accum (Joinrec points)
+      bodyDoc <- exprDoc body
+      pure $
+        parenify addParensIfSpaces $
+          ( points
+              & map
+                ( \(JoinPoint (N ident i) _ _) ->
+                    annotate AnnDefinition (renderVar (N (ident <> "✓") i)) <> " = ..."
+                )
+              & punctuate hardline
+              & fold
+          )
+            <> hardline
+            <> bodyDoc
+    else do
+      pointDocs <- traverse joinPointDoc points
+      bodyDoc <- exprDoc body
+      pure $
+        parenify addParensIfSpaces $
+          group (fold (punctuate hardline pointDocs))
+            <> hardline
+            <> bodyDoc
 
 -- if this is a list, slurp it into its non-empty exprs
 --
@@ -372,13 +409,13 @@ alternativeDoc addParensIfSpaces = \case
     where
       con =
         case con0 of
-          Ident _package _modules (N "[]" _) -> varIdent (zeroth "𝘯𝘪𝘭")
-          Ident _package _modules (N ":" _) -> varIdent (zeroth "𝘤𝘰𝘯𝘴")
+          Ident _package _modules (N "[]" _) -> varIdent (zeroth (mathy "nil"))
+          Ident _package _modules (N ":" _) -> varIdent (zeroth (mathy "cons"))
           _ -> con0
   ADef -> annotate AnnPattern "𝘥𝘦𝘧𝘢𝘶𝘭𝘵"
   ALit lit -> annotate AnnPattern (litDoc lit)
-  ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth "𝘵")) (var0 : var1 : vars))
-  ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth "𝘵#")) vars)
+  ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth (mathy "t"))) (var0 : var1 : vars))
+  ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth (mathy "t#"))) vars)
   AUnit -> annotate AnnPattern "𝘵"
 
 alternativesDoc :: [(Alternative (N Text), Expr (N Text))] -> M (Doc Ann)
@@ -410,7 +447,7 @@ alternativesDoc =
 
 identDoc :: Ident (N Text) -> Doc Ann
 identDoc Ident {name} =
-  pretty (showN name)
+  renderVar name
 
 letBindingDoc :: LetBinding (N Text) -> M (Doc Ann)
 letBindingDoc (LetBinding name defn) =
@@ -438,23 +475,25 @@ typeDoc_ addParensIfSpaces = \case
   TApp x y zs ->
     parenify addParensIfSpaces $
       group (nest 2 (vsep (map (typeDoc_ True) (x : y : zs))))
+  TConstraint {} -> error "TConstraint"
   TForall _ _ -> error "TForall"
   TFun _ _ -> error "TFun"
   TId ident -> pretty ident
   TTuple _ _ _ -> error "TTuple"
+  TTupleU _ -> error "TTupleU"
 
 varDoc :: Var (N Text) -> Doc Ann
 varDoc = \case
-  Tyvar var _kind -> annotate AnnType ("@" <> pretty (showN var))
-  Var var _type -> pretty (showN var)
+  Tyvar var _kind -> annotate AnnType ("@" <> renderVar var)
+  Var var _type -> renderVar var
 
 eCons :: Expr (N Text)
 eCons =
-  EVar (zeroth "𝘤𝘰𝘯𝘴")
+  EVar (zeroth (mathy "cons"))
 
 eNil :: Expr (N Text)
 eNil =
-  EVar (zeroth "𝘯𝘪𝘭")
+  EVar (zeroth (mathy "nil"))
 
 parenify :: Bool -> Doc ann -> Doc ann
 parenify addParensIfSpaces inner =
@@ -469,3 +508,77 @@ mungeVars =
       Tyvar {} -> Nothing
       var@Var {} -> Just var
     else id
+
+mathy :: IsString s => [Char] -> s
+mathy =
+  fromString . map go
+  where
+    go = \case
+      'a' -> '𝘢'
+      'b' -> '𝘣'
+      'c' -> '𝘤'
+      'd' -> '𝘥'
+      'e' -> '𝘦'
+      'f' -> '𝘧'
+      'g' -> '𝘨'
+      'h' -> '𝘩'
+      'i' -> '𝘪'
+      'j' -> '𝘫'
+      'k' -> '𝘬'
+      'l' -> '𝘭'
+      'm' -> '𝘮'
+      'n' -> '𝘯'
+      'o' -> '𝘰'
+      'p' -> '𝘱'
+      'q' -> '𝘲'
+      'r' -> '𝘳'
+      's' -> '𝘴'
+      't' -> '𝘵'
+      'u' -> '𝘶'
+      'v' -> '𝘷'
+      'w' -> '𝘸'
+      'x' -> '𝘹'
+      'y' -> '𝘺'
+      'z' -> '𝘻'
+      -- TODO rest of capital alphabet
+      'D' -> '𝘋'
+      c -> c
+
+-- -- These derived variables have a prefix that no Haskell value could have
+-- mkDataConWrapperOcc = mk_simple_deriv varName  "$W"
+-- mkWorkerOcc         = mk_simple_deriv varName  "$w"
+-- mkMatcherOcc        = mk_simple_deriv varName  "$m"
+-- mkBuilderOcc        = mk_simple_deriv varName  "$b"
+-- mkDefaultMethodOcc  = mk_simple_deriv varName  "$dm"
+-- mkClassOpAuxOcc     = mk_simple_deriv varName  "$c"
+-- mkDictOcc           = mk_simple_deriv varName  "$d"
+-- mkIPOcc             = mk_simple_deriv varName  "$i"
+-- mkSpecOcc           = mk_simple_deriv varName  "$s"
+-- mkForeignExportOcc  = mk_simple_deriv varName  "$f"
+-- mkRepEqOcc          = mk_simple_deriv tvName   "$r"   -- In RULES involving Coercible
+-- mkClassDataConOcc   = mk_simple_deriv dataName "C:"   -- Data con for a class
+-- mkNewTyCoOcc        = mk_simple_deriv tcName   "N:"   -- Coercion for newtypes
+-- mkInstTyCoOcc       = mk_simple_deriv tcName   "D:"   -- Coercion for type functions
+-- mkEqPredCoOcc       = mk_simple_deriv tcName   "$co"
+
+-- -- Used in derived instances for the names of auxiliary bindings.
+-- -- See Note [Auxiliary binders] in GHC.Tc.Deriv.Generate.
+-- mkCon2TagOcc        = mk_simple_deriv varName  "$con2tag_"
+-- mkTag2ConOcc        = mk_simple_deriv varName  "$tag2con_"
+-- mkMaxTagOcc         = mk_simple_deriv varName  "$maxtag_"
+-- mkDataTOcc          = mk_simple_deriv varName  "$t"
+-- mkDataCOcc          = mk_simple_deriv varName  "$c"
+
+-- -- TyConRepName stuff; see Note [Grand plan for Typeable] in GHC.Tc.Instance.Typeable
+-- mkTyConRepOcc occ = mk_simple_deriv varName prefix occ
+--   where
+--     prefix | isDataOcc occ = "$tc'"
+--            | otherwise     = "$tc"
+
+-- -- Generic deriving mechanism
+-- mkGenR   = mk_simple_deriv tcName "Rep_"
+-- mkGen1R  = mk_simple_deriv tcName "Rep1_"
+
+-- -- Overloaded record field selectors
+-- mkRecFldSelOcc :: String -> OccName
+-- mkRecFldSelOcc s = mk_deriv varName "$sel" [fsLit s]

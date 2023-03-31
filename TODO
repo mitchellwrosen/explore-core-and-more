@@ -45,3 +45,5 @@ Letrec and Joinrec LocalDef constructors
 Join letrec+let, joinrec+join? is a 1-elem rec thing important to know it's recursive?
 
 print binders above local defs
+
+write non-lambda lets/joins inline? (probs)

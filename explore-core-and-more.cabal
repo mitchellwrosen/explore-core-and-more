@@ -8,6 +8,7 @@ executable explore-core-and-more
     base ^>= 4.16 || ^>= 4.17 || ^>= 4.18,
     bytestring ^>= 0.11,
     containers ^>= 0.6,
+    directory ^>= 1.3.6,
     generic-lens ^>= 2.2.1,
     lens ^>= 5.2,
     megaparsec ^>= 9.3,

@@ -17,6 +17,7 @@ import Data.Void (Void)
 import Debug.Trace
 import Expr
 import Pretty (prettyExpr)
+import System.Directory qualified as Directory
 import System.Environment (getArgs)
 import System.Process qualified as Process
 import Text.Megaparsec
@@ -47,11 +48,12 @@ theMain = do
       Process.callProcess "ghc-9.4" (["-O"] ++ ghcOptions ++ ghcArgs)
     args -> do
       files <- do
-        let prefix =
-              case args of
-                [str] -> str
-                _ -> ""
-        lines <$> Process.readProcess "fd" ["-H", "-I", prefix ++ ".dump-simpl"] ""
+        case args of
+          [str] ->
+            Directory.doesPathExist str >>= \case
+              True -> pure [str]
+              False -> lines <$> Process.readProcess "fd" ["-H", "-I", str ++ ".*.dump-simpl"] ""
+          _ -> lines <$> Process.readProcess "fd" ["-H", "-I", ".*.dump-simpl"] ""
       case files of
         [file] -> do
           contents <- Text.decodeUtf8 <$> ByteString.readFile file
@@ -60,17 +62,30 @@ theMain = do
             Right (result, rest) -> do
               -- pPrintForceColor result
               -- Text.putStrLn ""
-              let putTerm Term {identifier, expr} = do
-                    -- Text.putStrLn (prettyExpr identifier expr)
-                    -- Text.putStrLn ""
-                    Text.putStrLn (prettyExpr (N identifier 0) (optimizeExpression expr))
-                    Text.putStrLn ""
+              let putTerm term@Term {identifier, expr} =
+                    when (not (boringTerm term)) do
+                      Text.putStrLn (prettyExpr (N identifier 0) (optimizeExpression expr))
+                      Text.putStrLn ""
               for_ (declarations result) \case
                 DeclTerm term -> putTerm term
                 DeclRec terms -> for_ terms putTerm
               when (rest /= Text.empty) do
                 Text.putStrLn ("\nTrailing input: " <> Text.pack (show rest))
         _ -> Text.putStr (Text.pack (unlines files))
+  where
+    boringTerm :: Term -> Bool
+    boringTerm Term {identifier, expr} =
+      or
+        [ -- KindRep
+          Text.isPrefixOf "$krep" identifier,
+          -- typeable TyCon
+          Text.isPrefixOf "$tc" identifier,
+          -- typeable Module
+          Text.isPrefixOf "$tr" identifier,
+          case expr of
+            EId _ -> True
+            _ -> False
+        ]
 
 type P = Parsec Void Text
 
@@ -87,14 +102,7 @@ parser = do
   string_ "Result size of Tidy Core"
   char_ '='
   size <- coreSizeP
-  declarations <- do
-    let loop acc =
-          optional (string_ "------ Local rules for imported ids --------") >>= \case
-            Just () -> pure (reverse acc)
-            Nothing -> do
-              decl <- declarationP
-              loop (decl : acc)
-    loop []
+  declarations <- many declarationP
   rest <- takeRest
   pure (Dump {size, declarations}, Text.take 60 rest)
 
@@ -130,18 +138,19 @@ data Declaration
 
 declarationP :: P Declaration
 declarationP =
-  label "declaration" do
-    optional (string_ "Rec {") >>= \case
-      Nothing -> DeclTerm <$> termP
-      Just () -> do
-        let loop acc =
-              optional (string_ "end Rec }") >>= \case
-                Nothing -> do
-                  term <- termP
-                  loop (term : acc)
-                Just () -> pure (reverse acc)
-        terms <- loop []
-        pure (DeclRec terms)
+  try do
+    label "declaration" do
+      optional (string_ "Rec {") >>= \case
+        Nothing -> DeclTerm <$> termP
+        Just () -> do
+          let loop acc =
+                optional (string_ "end Rec }") >>= \case
+                  Nothing -> do
+                    term <- termP
+                    loop (term : acc)
+                  Just () -> pure (reverse acc)
+          terms <- loop []
+          pure (DeclRec terms)
 
 data Term = Term
   { identifier :: Text,
@@ -199,23 +208,19 @@ termP =
 typeP :: P Type
 typeP =
   label "type" do
-    -- types can't be at column 1
-    SourcePos {sourceColumn} <- getSourcePos
-    when (sourceColumn == pos1) empty
-
     ty0 <- typeHeadP
     case ty0 of
       TApp {} -> funtimes ty0
       TConstraint {} -> error "TConstraint"
       TForall {} -> funtimes ty0
-      TFun {} -> error "TFun"
+      TFun {} -> funtimes ty0
       TId {} -> do
         ty1 <-
           many typeHeadP <&> \case
             [] -> ty0
             t : ts -> (TApp ty0 t ts)
         funtimes ty1
-      TTuple {} -> error "TTuple"
+      TTuple {} -> funtimes ty0
       TTupleU {} -> funtimes ty0
   where
     funtimes ty = do
@@ -553,7 +558,7 @@ tidentP = do
   -- skip package identifier
   _ <- optional packagePrefixP
   _ <- modulePrefixP
-  c0 <- satisfy \c -> isAlpha c || c == ':' || c == '_' || c == '\''
+  c0 <- satisfy \c -> isAlpha c || c == ':' || c == '*' || c == '_' || c == '\''
   cs <- takeWhileP Nothing \c -> isAlphaNum c || isOperator c || c == '_' || c == '\''
   let ident = tick <> Text.cons c0 cs
   -- tyvars sometimes have some skolem info like @a[sk:1]
