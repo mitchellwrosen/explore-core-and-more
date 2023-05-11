@@ -14,6 +14,9 @@ import Prettyprinter
 import Prettyprinter.Render.Terminal
 import Type
 
+bulletArgs :: Bool
+bulletArgs = True
+
 omitTypes :: Bool
 omitTypes = True
 
@@ -190,7 +193,7 @@ exprDoc_ addParensIfSpaces = \case
     bodyDoc <- exprDoc body
     pure $
       parenify addParensIfSpaces $
-        nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> " →" <> line <> bodyDoc)
+        nest 2 ("\\" <> hsep (map varDoc (mungeVars bindings)) <> space <> urarrow <> line <> bodyDoc)
   ECase scrutinee whnf alternatives -> exprCaseDoc addParensIfSpaces scrutinee whnf alternatives
   EJump -> error "EJump"
   ETy ty -> pure (annotate AnnType ("@" <> typeDoc_ True ty))
@@ -198,8 +201,8 @@ exprDoc_ addParensIfSpaces = \case
   ELetrec bindings body -> exprLetrecDoc addParensIfSpaces bindings body
   EJoin point body -> exprJoinDoc addParensIfSpaces point body
   EJoinrec points body -> exprJoinrecDoc addParensIfSpaces points body
-  ETuple x y zs -> exprDoc_ addParensIfSpaces (EApp (EVar (zeroth "𝘵")) x (y : zs))
-  ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar (zeroth "𝘵#")) expr exprs)
+  ETuple x y zs -> exprDoc_ addParensIfSpaces (EApp (EVar (zeroth (mathy "t"))) x (y : zs))
+  ETupleU (expr : exprs) -> exprDoc_ addParensIfSpaces (EApp (EVar (zeroth (mathy "t#"))) expr exprs)
   ETupleU exprs -> error ("ETupleU " ++ show exprs)
 
 exprAppDoc :: Bool -> Expr (N Text) -> [Expr (N Text)] -> M (Doc Ann)
@@ -210,8 +213,24 @@ exprAppDoc addParensIfSpaces x ys = do
 exprAppDoc1 :: Bool -> Doc Ann -> [Expr (N Text)] -> M (Doc Ann)
 exprAppDoc1 addParensIfSpaces doc ys = do
   let args = mapMaybe p ys
-  docs <- traverse (exprDoc_ True) args
-  pure (parenify (addParensIfSpaces && not (null args)) (group (nest 2 (vsep (doc : docs)))))
+  if null args
+    then pure doc
+    else
+      if bulletArgs
+        then do
+          docs <- traverse (exprDoc_ False) args
+          pure $
+            parenify
+              addParensIfSpaces
+              ( group
+                  ( flatAlt
+                      (doc <> hardline <> fold (punctuate hardline (map (\d -> ubullet <> space <> align d) docs)))
+                      (hsep (doc : map (parenify addParensIfSpaces) docs))
+                  )
+              )
+        else do
+          docs <- traverse (exprDoc_ True) args
+          pure (parenify addParensIfSpaces (group (nest 2 (vsep (doc : docs)))))
   where
     p :: Expr (N Text) -> Maybe (Expr (N Text))
     p expr =
@@ -253,7 +272,9 @@ exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
          in if verbose
               then
                 alternativeDoc False alternative
-                  <> " ← "
+                  <> space
+                  <> ularrow
+                  <> space
                   <> group (nest 2 (line' <> scrutineeDoc))
               else scrutineeDoc
       )
@@ -273,7 +294,9 @@ exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
                ADef -> mempty
                _ -> " = " <> alternativeDoc False alternative
            )
-        <> " ← "
+        <> space
+        <> ularrow
+        <> space
         <> group (nest 2 (line' <> scrutineeDoc))
         <> hardline
         <> bodyDoc
@@ -285,7 +308,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf [] = do
     parenify addParensIfSpaces $
       ( case whnf of
           Nothing -> scrutineeDoc
-          Just s -> renderVar s <> " ← " <> group (nest 2 (line' <> scrutineeDoc))
+          Just s -> renderVar s <> space <> ularrow <> space <> group (nest 2 (line' <> scrutineeDoc))
       )
 -- case scrutinee of [whnf] {
 --   alternative1 -> body1
@@ -305,7 +328,9 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
             Just s ->
               flatAlt
                 ( renderVar s
-                    <> " ← "
+                    <> space
+                    <> ularrow
+                    <> space
                     <> group (nest 2 (line' <> scrutineeDoc))
                     <> hardline
                     <> annotate AnnKeyword "switch"
@@ -318,7 +343,7 @@ exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
                 )
           else case whnf of
             Nothing -> scrutineeDoc
-            Just s -> group (renderVar s <> " ← " <> nest 2 (line' <> scrutineeDoc))
+            Just s -> group (renderVar s <> space <> ularrow <> space <> nest 2 (line' <> scrutineeDoc))
       )
         <> hardline
         <> altsDoc
@@ -441,11 +466,11 @@ alternativeDoc addParensIfSpaces = \case
           Ident _package _modules (N "[]" _) -> varIdent (zeroth (mathy "nil"))
           Ident _package _modules (N ":" _) -> varIdent (zeroth (mathy "cons"))
           _ -> con0
-  ADef -> annotate AnnPattern "𝘥𝘦𝘧𝘢𝘶𝘭𝘵"
+  ADef -> annotate AnnPattern (mathy "default")
   ALit lit -> annotate AnnPattern (litDoc lit)
   ATuple var0 var1 vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth (mathy "t"))) (var0 : var1 : vars))
   ATupleU vars -> alternativeDoc addParensIfSpaces (ACon (varIdent (zeroth (mathy "t#"))) vars)
-  AUnit -> annotate AnnPattern "𝘵"
+  AUnit -> annotate AnnPattern (mathy "t")
 
 alternativesDoc :: [(Alternative (N Text), Expr (N Text))] -> M (Doc Ann)
 alternativesDoc =
@@ -464,7 +489,8 @@ alternativesDoc =
           nest 2 $
             (if showSwitchCase then (annotate AnnKeyword "case" <> space) else mempty)
               <> alternativeDoc False alternative
-              <> " →"
+              <> space
+              <> urarrow
               <> line
               <> bodyDoc
 
@@ -571,6 +597,15 @@ mathy =
       -- TODO rest of capital alphabet
       'D' -> '𝘋'
       c -> c
+
+ubullet :: Doc ann
+ubullet = "∙"
+
+ularrow :: Doc ann
+ularrow = "⬅" -- "←"
+
+urarrow :: Doc ann
+urarrow = "⮕" -- "→"
 
 -- -- These derived variables have a prefix that no Haskell value could have
 -- mkDataConWrapperOcc = mk_simple_deriv varName  "$W"
