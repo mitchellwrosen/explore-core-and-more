@@ -16,7 +16,7 @@ import Data.Text.IO qualified as Text
 import Data.Void (Void)
 import Debug.Trace
 import Expr
-import Pretty (prettyExpr)
+import Pretty (prettyDefn)
 import System.Directory qualified as Directory
 import System.Environment (getArgs)
 import System.Process qualified as Process
@@ -64,7 +64,7 @@ theMain = do
               -- Text.putStrLn ""
               let putTerm term@Term {identifier, expr} =
                     when (not (boringTerm term)) do
-                      Text.putStrLn (prettyExpr (N identifier 0) (optimizeExpression expr))
+                      Text.putStrLn (prettyDefn (N identifier 0) (optimizeExpression expr))
                       Text.putStrLn ""
               for_ (declarations result) \case
                 DeclTerm term -> putTerm term

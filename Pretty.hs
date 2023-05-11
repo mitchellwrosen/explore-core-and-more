@@ -1,4 +1,4 @@
-module Pretty where
+module Pretty (prettyDefn) where
 
 import Control.Monad.Writer.CPS qualified as Writer
 import Data.Char (isUpper)
@@ -24,9 +24,12 @@ liftLocalDefinitions = False
 showRedundantPatterns :: Bool
 showRedundantPatterns = False
 
--- TODO rename prettyDefn or something
-prettyExpr :: N Text -> Expr (N Text) -> Text
-prettyExpr ident defn =
+-- show switch/case keywords, or just omit them?
+showSwitchCase :: Bool
+showSwitchCase = False
+
+prettyDefn :: N Text -> Expr (N Text) -> Text
+prettyDefn ident defn =
   renderStrict (layoutPretty opts (styleAnn <$> indent 2 doc))
   where
     opts = LayoutOptions {layoutPageWidth = AvailablePerLine 120 1}
@@ -223,7 +226,7 @@ exprAppDoc1 addParensIfSpaces doc ys = do
 -- }
 exprCaseDoc :: Bool -> Expr (N Text) -> Maybe (N Text) -> [(Alternative (N Text), Expr (N Text))] -> M (Doc Ann)
 exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
-  scrutineeDoc <- exprDoc scrutinee
+  scrutineeDoc <- prettyScrutinee scrutinee
   bodyDoc <- exprDoc body
   pure $
     parenify addParensIfSpaces $
@@ -251,8 +254,8 @@ exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
               then
                 alternativeDoc False alternative
                   <> " ← "
-                  <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
-              else group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
+                  <> group (nest 2 (line' <> scrutineeDoc))
+              else scrutineeDoc
       )
         <> hardline
         <> bodyDoc
@@ -260,7 +263,7 @@ exprCaseDoc addParensIfSpaces scrutinee Nothing [(alternative, body)] = do
 --   alternative -> body
 -- }
 exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
-  scrutineeDoc <- exprDoc scrutinee
+  scrutineeDoc <- prettyScrutinee scrutinee
   bodyDoc <- exprDoc body
   pure $
     parenify addParensIfSpaces $
@@ -271,58 +274,59 @@ exprCaseDoc addParensIfSpaces scrutinee (Just whnf) [(alternative, body)] = do
                _ -> " = " <> alternativeDoc False alternative
            )
         <> " ← "
-        <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+        <> group (nest 2 (line' <> scrutineeDoc))
         <> hardline
         <> bodyDoc
 -- case scrutinee of [whnf] {
 -- }
 exprCaseDoc addParensIfSpaces scrutinee whnf [] = do
-  scrutineeDoc <- exprDoc scrutinee
+  scrutineeDoc <- prettyScrutinee scrutinee
   pure $
     parenify addParensIfSpaces $
       ( case whnf of
-          Nothing -> group (annotate (AnnColor Red) "‼" <> scrutineeDoc)
-          Just s -> renderVar s <> " ← " <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
+          Nothing -> scrutineeDoc
+          Just s -> renderVar s <> " ← " <> group (nest 2 (line' <> scrutineeDoc))
       )
 -- case scrutinee of [whnf] {
 --   alternative1 -> body1
 --   alternative2 -> body2
 -- }
 exprCaseDoc addParensIfSpaces scrutinee whnf alternatives = do
-  scrutineeDoc <- exprDoc scrutinee
+  scrutineeDoc <- prettyScrutinee scrutinee
   altsDoc <- alternativesDoc alternatives
   pure $
     parenify addParensIfSpaces $
-      ( case whnf of
-          Nothing ->
-            group
-              ( flatAlt
-                  (annotate (AnnColor Red) "‼" <> scrutineeDoc <> hardline <> annotate AnnKeyword "switch")
-                  ( annotate AnnKeyword "switch"
-                      <> space
-                      <> nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc)
-                  )
-              )
-          Just s ->
-            group
-              ( flatAlt
-                  ( renderVar s
-                      <> " ← "
-                      <> group (nest 2 (line' <> annotate (AnnColor Red) "‼" <> scrutineeDoc))
-                      <> hardline
-                      <> annotate AnnKeyword "switch"
-                  )
-                  ( annotate AnnKeyword "switch"
-                      <> space
-                      <> renderVar s
-                      <> " = "
-                      <> annotate (AnnColor Red) "‼"
-                      <> scrutineeDoc
-                  )
-              )
+      ( if showSwitchCase
+          then group case whnf of
+            Nothing ->
+              flatAlt
+                (scrutineeDoc <> hardline <> annotate AnnKeyword "switch")
+                (annotate AnnKeyword "switch" <> space <> nest 2 (line' <> scrutineeDoc))
+            Just s ->
+              flatAlt
+                ( renderVar s
+                    <> " ← "
+                    <> group (nest 2 (line' <> scrutineeDoc))
+                    <> hardline
+                    <> annotate AnnKeyword "switch"
+                )
+                ( annotate AnnKeyword "switch"
+                    <> space
+                    <> renderVar s
+                    <> " = "
+                    <> scrutineeDoc
+                )
+          else case whnf of
+            Nothing -> scrutineeDoc
+            Just s -> group (renderVar s <> " ← " <> nest 2 (line' <> scrutineeDoc))
       )
         <> hardline
         <> altsDoc
+
+prettyScrutinee :: Expr (N Text) -> M (Doc Ann)
+prettyScrutinee expr = do
+  doc <- exprDoc expr
+  pure (annotate (AnnColor Red) "‼" <> doc)
 
 exprLetDoc :: Bool -> LetBinding (N Text) -> Expr (N Text) -> M (Doc Ann)
 exprLetDoc addParensIfSpaces binding@(LetBinding ident _) body =
@@ -458,8 +462,7 @@ alternativesDoc =
       pure $
         group $
           nest 2 $
-            annotate AnnKeyword "case"
-              <> space
+            (if showSwitchCase then (annotate AnnKeyword "case" <> space) else mempty)
               <> alternativeDoc False alternative
               <> " →"
               <> line
