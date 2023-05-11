@@ -33,12 +33,20 @@ showSwitchCase = False
 
 prettyDefn :: N Text -> Expr (N Text) -> Text
 prettyDefn ident defn =
-  renderStrict (layoutPretty opts (styleAnn <$> indent 2 doc))
+  guidelines (renderStrict (layoutPretty opts (styleAnn <$> indent 2 doc)))
   where
     opts = LayoutOptions {layoutPageWidth = AvailablePerLine 120 1}
 
     doc :: Doc Ann
     doc = render ident defn
+
+    guidelines :: Text -> Text
+    guidelines = Text.unlines . map guideline . Text.lines
+
+    guideline :: Text -> Text
+    guideline x =
+      let (xs, ys) = Text.span (== ' ') x
+       in if Text.null xs then x else Text.replace "  " "\ESC[90m│\ESC[39m " xs <> ys
 
 render :: N Text -> Expr (N Text) -> Doc Ann
 render ident defn =
