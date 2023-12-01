@@ -14,14 +14,8 @@ import Prettyprinter
 import Prettyprinter.Render.Terminal
 import Type
 
--- oops True is busted, it's rendering an app like
---
---   foo bar baz qux monk
---
--- instead of
---   foo bar (baz qux) monk
 bulletArgs :: Bool
-bulletArgs = False
+bulletArgs = True
 
 omitTypes :: Bool
 omitTypes = True
@@ -174,15 +168,24 @@ exprAppDoc1 addParensIfSpaces doc ys =
         else
           if bulletArgs
             then
-              let docs = map (exprDoc_ False) args
-               in parenify
-                    addParensIfSpaces
-                    ( group
-                        ( flatAlt
-                            (doc <> hardline <> fold (punctuate hardline (map (\d -> ubullet <> space <> align d) docs)))
-                            (hsep (doc : map (parenify addParensIfSpaces) docs))
+              parenify
+                addParensIfSpaces
+                ( group
+                    ( flatAlt
+                        ( doc
+                            <> hardline
+                            <> fold
+                              ( punctuate
+                                  hardline
+                                  ( map
+                                      ((\d -> ubullet <> space <> align d) . exprDoc_ False)
+                                      args
+                                  )
+                              )
                         )
+                        (hsep (doc : map (exprDoc_ True) args))
                     )
+                )
             else
               let docs = map (exprDoc_ True) args
                in parenify addParensIfSpaces (group (nest 2 (vsep (doc : docs))))
