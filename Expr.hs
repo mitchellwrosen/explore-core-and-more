@@ -63,11 +63,8 @@ data JoinPoint var
   deriving stock (Eq, Functor, Show)
 
 data Lit
-  = LInt Text -- 0
-  | LIntU Text -- 0#
-  | LStrU Text -- "foobar"#
-  | LWordU Text -- 0##
-  | LWord64U Text -- 0##64
+  = LNumber !Text !Text -- 0## -> "0" "##"
+  | LString !Text -- "foobar"#
   deriving stock (Eq, Show)
 
 -- TODO rename to Binder

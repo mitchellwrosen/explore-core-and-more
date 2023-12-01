@@ -522,11 +522,8 @@ joinPointDoc (JoinPoint (N name i) bindings defn) =
 -- remove "#" suffixes because they aren't very informative
 litDoc :: Lit -> Doc Ann
 litDoc = \case
-  LInt n -> pretty n
-  LIntU n -> pretty n
-  LStrU s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\""
-  LWordU n -> pretty n
-  LWord64U n -> pretty n
+  LNumber n _ -> pretty n
+  LString s -> "\"" <> pretty (Text.replace "\"" "\\\"" s) <> "\""
 
 typeDoc :: Type -> Doc Ann
 typeDoc =
@@ -571,7 +568,7 @@ mungeVars =
       var@Var {} -> Just var
     else id
 
-mathy :: IsString s => [Char] -> s
+mathy :: (IsString s) => [Char] -> s
 mathy =
   fromString . map go
   where

@@ -5,7 +5,7 @@ import Control.Monad (guard, when)
 import Data.ByteString qualified as ByteString
 import Data.Char
 import Data.Foldable (for_)
-import Data.Functor (void, (<&>))
+import Data.Functor (void, ($>), (<&>))
 import Data.List (foldl')
 import Data.Set (Set)
 import Data.Set qualified as Set
@@ -19,6 +19,7 @@ import Expr
 import Pretty (prettyDefn)
 import System.Directory qualified as Directory
 import System.Environment (getArgs)
+import System.Exit (exitFailure, exitSuccess)
 import System.Process qualified as Process
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -32,30 +33,26 @@ main = theMain
 
 theMain :: IO ()
 theMain = do
+  let ghcArgs =
+        Text.unwords
+          [ "-ddump-simpl",
+            "-ddump-to-file",
+            "-dsuppress-coercion-types",
+            "-dsuppress-coercions",
+            "-dsuppress-core-sizes",
+            "-dsuppress-idinfo",
+            "-dsuppress-timestamps",
+            "-dsuppress-type-signatures",
+            "-dsuppress-unfoldings"
+          ]
+
   getArgs >>= \case
-    "ghc" : ghcArgs -> do
-      let ghcOptions =
-            [ "-ddump-simpl",
-              "-ddump-to-file",
-              "-dsuppress-coercion-types",
-              "-dsuppress-coercions",
-              "-dsuppress-core-sizes",
-              "-dsuppress-idinfo",
-              "-dsuppress-timestamps",
-              "-dsuppress-unfoldings",
-              "-fforce-recomp"
-            ]
-      Process.callProcess "ghc-9.4" (["-O"] ++ ghcOptions ++ ghcArgs)
-    args -> do
-      files <- do
-        case args of
-          [str] ->
-            Directory.doesPathExist str >>= \case
-              True -> pure [str]
-              False -> lines <$> Process.readProcess "fd" ["-H", "-I", str ++ ".*.dump-simpl"] ""
-          _ -> lines <$> Process.readProcess "fd" ["-H", "-I", ".*.dump-simpl"] ""
-      case files of
-        [file] -> do
+    ["ghc-args"] -> do
+      Text.putStrLn ghcArgs
+      exitSuccess
+    [file] ->
+      Directory.doesPathExist file >>= \case
+        True -> do
           contents <- Text.decodeUtf8 <$> ByteString.readFile file
           case runParser parser "" contents of
             Left err -> putStrLn (errorBundlePretty err)
@@ -71,7 +68,27 @@ theMain = do
                 DeclRec terms -> for_ terms putTerm
               when (rest /= Text.empty) do
                 Text.putStrLn ("\nTrailing input: " <> Text.pack (show rest))
-        _ -> Text.putStr (Text.pack (unlines files))
+        False -> do
+          Text.putStrLn "No such file!"
+          exitFailure
+    _ -> do
+      (Text.putStrLn . Text.unlines)
+        [ "Hello and welcome to your janky tool friend *explore-core-and-more*!",
+          "",
+          "I'm sort of able to parse and pretty-print stringy Core that's been rendered with the following options:",
+          "",
+          " " <> ghcArgs,
+          "",
+          "You can run me with a single arg \"ghc-args\" and I'll return those in a string, for you to use in a command like",
+          "",
+          "  cabal build my-package:bench:benchmarks --ghc-options=\"-fforce-recomp $(explore-core-and-more ghc-args)\"",
+          "",
+          "You can invoke me with a single argument: a file path to a .dump-simpl file.",
+          "Since you don't seem to know that, though, I'll list them all for you (using hard-coded dependency on `fd` lol...):"
+        ]
+
+      files <- lines <$> Process.readProcess "fd" ["-H", "-I", ".dump-simpl"] ""
+      Text.putStrLn (Text.unlines (map Text.pack files))
   where
     boringTerm :: Term -> Bool
     boringTerm Term {identifier, expr} =
@@ -138,19 +155,18 @@ data Declaration
 
 declarationP :: P Declaration
 declarationP =
-  try do
-    label "declaration" do
-      optional (string_ "Rec {") >>= \case
-        Nothing -> DeclTerm <$> termP
-        Just () -> do
-          let loop acc =
-                optional (string_ "end Rec }") >>= \case
-                  Nothing -> do
-                    term <- termP
-                    loop (term : acc)
-                  Just () -> pure (reverse acc)
-          terms <- loop []
-          pure (DeclRec terms)
+  label "declaration" do
+    optional (string_ "Rec {") >>= \case
+      Nothing -> DeclTerm <$> termP
+      Just () -> do
+        let loop acc =
+              optional (string_ "end Rec }") >>= \case
+                Nothing -> do
+                  term <- dbg "termP" termP
+                  loop (term : acc)
+                Just () -> pure (reverse acc)
+        terms <- loop []
+        pure (DeclRec terms)
 
 data Term = Term
   { identifier :: Text,
@@ -158,40 +174,21 @@ data Term = Term
   }
   deriving stock (Show)
 
--- Parse an identifier with a type signature like
+-- Parse an identifier like
 --
---   foo :: Type
 --   foo = ...
 --       ^
 --
--- leaving the parse state at the first token after the second 'foo'. This isn't always an '=' token; join points are
--- written with a number of parameters to the left of the '=' corresponding to the join arity, e.g.
+-- leaving the parse state at the first token after 'foo'. This isn't always an '=' token; join points are written with
+-- a number of parameters to the left of the '=' corresponding to the join arity, e.g.
 --
---   foo :: Type
 --   foo (x :: Type) = ...
 --       ^
 identifierP :: P Text
 identifierP =
   label "identifier" do
-    startPos <- getSourcePos
     _ <- modulePrefixP
-    ident <- eidentStrP
-    _typeText <- do
-      let grabLine = takeWhile1P Nothing (/= '\n') <* space
-      let loop :: [Text] -> P Text
-          loop acc = do
-            currentPos <- getSourcePos
-            if sourceColumn currentPos == sourceColumn startPos
-              then pure (Text.unwords (reverse acc))
-              else do
-                line <- grabLine
-                loop (line : acc)
-      line <- grabLine
-      loop [line]
-    -- repeated identifier from type sig line
-    _ <- modulePrefixP
-    _ <- eidentStrP
-    pure ident
+    eidentStrP
 
 termP :: P Term
 termP =
@@ -585,7 +582,7 @@ varP = do
     c0 -> do
       cs <- takeWhileP Nothing (\c -> isAlphaNum c || c == '_' || c == '\'' || c == '$' || c == '#')
       space
-      ty <- optional tysig
+      ty <- pure Nothing -- optional tysig
       pure (Var (Text.cons c0 cs) ty)
   where
     tyvar :: P Text
@@ -603,11 +600,13 @@ varP = do
 bindingP :: P (Var Text)
 bindingP = do
   asum
-    [ do
-        string_ "("
-        var <- varP
-        string_ ")"
-        pure var,
+    [ varP,
+      -- old varP parser always put parens cause they had typesigs
+      -- do
+      --   string_ "("
+      --   var <- varP
+      --   string_ ")"
+      --   pure var,
       Var "_" Nothing <$ string_ "_"
     ]
 
@@ -622,28 +621,57 @@ litP =
             hunks acc = do
               anySingle >>= \case
                 '"' -> pure (Text.concat (reverse acc))
-                '\\' -> undefined
+                '\\' ->
+                  anySingle >>= \case
+                    '\\' -> do
+                      s <- hunk
+                      hunks (s : "\\" : acc)
+                    _ -> undefined
                 c -> error (show c)
         s <- hunk
         str <- hunks [s]
         optional (char_ '#') <&> \case
           Nothing -> error "TODO non-# string"
-          Just () -> LStrU str,
+          Just () -> LString str,
       do
-        sign <- string "-" <|> pure ""
-        c0 <- satisfy isDigit
-        cs <- takeWhileP Nothing isDigit
-        let n = sign <> Text.cons c0 cs
-        (if sign == "-" then pure Nothing else optional (string_ "##64")) >>= \case
-          Nothing ->
-            optional (string_ "##") >>= \case
-              Nothing ->
-                optional (string_ "#") <&> \case
-                  Nothing -> LInt n
-                  Just () -> LIntU n
-              Just () -> pure (LWordU n)
-          Just () -> pure (LWord64U n)
+        sign <- signP
+        n0 <- intP
+        n1 <-
+          asum
+            [ do
+                x1 <- string "."
+                x2 <- intP
+                x3 <-
+                  asum
+                    [ do
+                        x4 <- string "e"
+                        x5 <- signP
+                        x6 <- intP
+                        pure (x4 <> x5 <> x6),
+                      pure ""
+                    ]
+                pure (x1 <> x2 <> x3),
+              pure ""
+            ]
+
+        if sign == "-"
+          then undefined
+          else do
+            suffix <-
+              asum
+                [ string "#Word64",
+                  string "##",
+                  string "#"
+                ]
+            space
+            pure (LNumber (sign <> n0 <> n1) suffix)
     ]
+  where
+    signP :: P Text
+    signP = string "-" <|> pure ""
+
+    intP :: P Text
+    intP = takeWhile1P Nothing isDigit
 
 alternativeP :: P (Alternative Text, Expr Text)
 alternativeP = do
