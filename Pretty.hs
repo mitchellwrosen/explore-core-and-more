@@ -14,8 +14,14 @@ import Prettyprinter
 import Prettyprinter.Render.Terminal
 import Type
 
+-- oops True is busted, it's rendering an app like
+--
+--   foo bar baz qux monk
+--
+-- instead of
+--   foo bar (baz qux) monk
 bulletArgs :: Bool
-bulletArgs = True
+bulletArgs = False
 
 omitTypes :: Bool
 omitTypes = True
