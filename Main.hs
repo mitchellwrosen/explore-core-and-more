@@ -103,6 +103,7 @@ theMain = do
             EId _ -> True
             _ -> False
         ]
+      -- False
 
 type P = Parsec Void Text
 
@@ -162,7 +163,7 @@ declarationP =
         let loop acc =
               optional (string_ "end Rec }") >>= \case
                 Nothing -> do
-                  term <- dbg "termP" termP
+                  term <- termP
                   loop (term : acc)
                 Just () -> pure (reverse acc)
         terms <- loop []
@@ -654,17 +655,14 @@ litP =
               pure ""
             ]
 
-        if sign == "-"
-          then undefined
-          else do
-            suffix <-
-              asum
-                [ string "#Word64",
-                  string "##",
-                  string "#"
-                ]
-            space
-            pure (LNumber (sign <> n0 <> n1) suffix)
+        suffix <-
+          asum
+            [ string "#Word64",
+              string "##",
+              string "#"
+            ]
+        space
+        pure (LNumber (sign <> n0 <> n1) suffix)
     ]
   where
     signP :: P Text

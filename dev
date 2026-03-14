@@ -1,3 +1,3 @@
 #!/bin/bash
 
-ghcid -c 'cabal repl' --restart explore-core-and-more.cabal -T ':main Scope' -W
+ghcid -c 'cabal repl' --restart explore-core-and-more.cabal -T ':main .simpl/Scope.dump-simpl' -W
